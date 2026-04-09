@@ -1,0 +1,258 @@
++ Notas rapidas.
+* Operacao geral
+A Significado geral dos caracteres:
+
+   /  -- Inicia a entrada de um comando.
+   "  -- Inicia a entrada de um texto.
+   ,  -- Inicia a repeticao de um texto.
+   =  -- Move o cursor da planilha diretamente para a celula especificada.
+   !  -- Forca o recalculo de toda a planilha.
+   ;  -- Coloca o cursor em outra janela.
+   &  -- Retorna o controle da planilha de volta ao arquivo Execute (.XQT).
+
+   Para mover o cursor da planilha, use as teclas com setas.
+   Qualquer outro caracter inicia a entrada de uma formula.
+B Especificacao do nome do arquivo:
+
+   O nome de um arquivo identifica um arquivo (assim como uma planilha) no disco.  O nome de um arquivo pode conter de 1 a 8 caracteres (mas NAO . , : ; [ ] * ?).
+
+   Se o nome do arquivo nao esta (ou nao pode estar) no disco do SuperCalc2, o nome do arquivo deve ser precedido da letra do disk drive e dois pontos [:].
+
+   Geralmente as planilhas no SuperCalc2 sao automaticamente assinaladas com uma extensao .CAL, que e colocada apos o nome.
+   Nao e necessario colocar esta extensao. Se for necessario usar um arquivo com uma extensao diferente (assim como .XQT para arquivos Execute), deve-se colocar apos o nome, um ponto [.] e ate tres caracteres.
+
+     Exemplos:
+          BALANCE
+          Exemplo
+          B:Fev24
+          B:GRUPO.XQT
+
+   <RETURN> -- Se for digitado ao inves do nome, fornece o diretorio do disco ou, arqivos com extensao .CAL.
+     NOTA : A apresentacao do diretorio nao funciona com o D.O.S.
+   [ESC] -- Fornece o nome do ultimo arquivo carregado.
+C Designador de faixa:
+
+  Varios comandos precisam que sejam especificadas as celulas que sao afetadas pelo comando.  A linha de status pode pedir (dependendo do comando e uso) por 'Linha', 'Coluna', 'Celula', 'Faixa da Linha', 'Faixa da Coluna', ou 'Faixa'.
+
+     FAIXA --- Algum dos seguintes.
+     LINHA --- O numero de uma linha de 1 a 254, referente a uma linha inteira.
+     COLUNA -- Uma letra de A ate BK, referente a uma coluna inteira.
+     CELULA -- A letra de uma coluna seguida pelo numero de uma linha, assim como J10.
+     FAIXA DA LINHA -- Dois numeros de linhas, separados por dois potos [:], por exemplo 43:210.
+     FAIXA DA COLUNA - Duas letras separadas por dois pontos [:], por exemplo A:BC
+     BLOCO --- Duas celulas, separadas por dois pontos [:], por exemplo A7:F12, referindo a todas as celulas entre as duas celulas designadas.
+
+ Em adicao:
+   Entrando somente <RETURN> (faixa vazia), significa que e a celula ou linha ou coluna corrente.
+     ALL indica a faixa A1:<ultima coluna/linha>.
+   Entrando [ESC] seguido das teclas de cursor, pode-se posicionar o cursor ate a celula desejada, e <RETURN> entra a celula atual.
+D Comandos de barra ( / ):
+     A(rrange)---Faz a ordenacao (sort) das celulas em ordem ascendente ou descendente.
+     B(lank)-----Apaga o conteudo de uma celula.
+     C(opy)------Duplica o conteudo e mostra o formato das celulas.
+     D(elete)----Apaga uma ou varias linhas ou colunas.
+     E(dit)------Faz a edicao de uma celula.
+     F(ormat)----Estabelece o formato em niveis como entrada, linha, coluna, ou global.
+     G(lobal)----Especifica o display global e as opcoes de calculo.
+     I(nsert)----Acrescenta linhas ou colunas vazias.
+     L(oad)------Le uma planilha (ou parte) do disco.
+     M(ove)------Move linhas e/ou colunas para uma nova posicao.
+     O(utput)----Envia uma planilha ou conteudo das celulas para a impressora, video ou disco.
+     P(rotect)---Evita a alteracao futura das celulas.
+     Q(uit)------Finaliza o SuperCalc2.
+     R(eplicate)-Reproduz o conteudo de partes de linhas ou colunas.
+     S(ave)------Grava a planilha corrente em disco.
+     T(itle)-----Trava linhas ou colunas ou ambas na janela de display.
+     U(nprotect)-Retira a trava de protecao colocada pelo comando /P.
+     W(indow)----Divide a tela.
+     X(eXecute)--Aceita comandos e dados de um arquivo .XQT.
+     Z(ap)-------Apaga a planilha e seta a sua formatacao ao original.
+E Opcoes de ajuste de formulas:
+
+   O ajuste de formulas determina como as celulas de referencia serao movidas para as novas posicoes.
+
+     N(o adjust) - Copia todas as celulas sem alterar.
+     A(sk) ------- Pergunta se quer que seja ajustada ou nao cada celula copiada.
+     V(alues) ---- Copia os valores das celulas como constantes numericas.
+     +  -- Soma o valor da celula de origem com o valor da celula de destino e coloca o valor resultante na celula de destino.
+     -  -- Subtrai o valor da celula de origem do valor da celula de destino e coloca o valor resultante na celula de destino.
+     *  -- Multiplica o valor da celula de origem com o valor da celula de destino e coloca o valor resultante na celula de destino.
+     /  -- Divide o valor da celula de destino pelo valor da celula de origem e coloca o valor resultante na celula de destino.
+   Se nao for especificado (se for digitado <RETURN> ao inves de [,]) todas as celulas de referencia sao ajustadas automaticamente.
+F Trava de titulo:
+
+   O SuperCalc2 pode "travar" as colunas mais a esquerda e/ou as linhas mais acima, para que estas nao sejam deslocadas durante um "scroll".
+
+   Opcoes:
+
+     H(orizontal) - Trava a linha corrente e todas as linhas abaixo.
+
+     V(ertical) --- Trava a coluna corrente e todas as outras a esquerda.
+
+     B(oth) ------- Trava ambos H (linhas) e V (colunas).
+
+     C(lear) ------ Apaga todas as travas de titulos.
+G Opcoes do comando Global:
+
+     R(ow-wise) --- Recalculo por linhas da esquerda para a direita. Toda a linha 1 e calculada, e entao toda a linha 2, etc. (default)
+     C(olumn-wise)- Recalculo por colunas do topo para baixo. A coluna A e calculada, e entao toda a coluna B, etc.
+     A(utomatic recalculation) - A planilha toda e recalculada a cada vez que um numero ou formula for entrado. (default).
+     M(anual recalculation) - A planilha e recalculada somente quando for digitado "!".
+
+   Selecione as seguintes opcoes para mudar de Y-sim para Nao ou, Nao para Y-sim:
+
+     T(ab) --- No modo Tab, o cursor salta apenas para as celulas que nao estao vazias e nem protegidas. O default e Nao.
+     B(orders) - Determina se o numero das linhas e as letras das colunas sao mostrados na borda. O default e Y-sim.
+     F(ormula display) - Sao mostrados os conteudos (formulas ao inves de valores calculados). O default e Nao (sao mostrados os valores).
+     N(ext) ---- O cursor da planilha avanca automaticamente (na mesma direcao que foi movida anteriormente) quando for digitado <RETURN>. O default e Y-sim.
+H Formatos de escopo:
+
+   Os formatos controlam como sao mostrados os valores das celulas. Isto e, nao afetam os conteudos das celulas.
+
+     E(ntry) -- Seta o formato de como e mostrado uma ou um grupo de celulas.
+
+     R(ow) ---- Seta o formato de como e mostrado todas as celulas em uma faixa de linhas que nao sao formatados como entradas.
+
+     C(olumn) - Seta o formato de como e mostrado (ou tamanho) de uma faixa de colunas. Afeta as celulas que nao foram formatadas como entrada ou linha.
+
+     G(lobal) - Seta o formato de como e mostrado e o tamanho da coluna para todas as celulas nao formatadas como entrada, linha, ou coluna.
+
+     D(efine) - Seta a tabela de formatos definidos pelo usuario (User-defined).
+I Opcoes do Quit:
+
+     Y(es) -- Sai do SuperCalc2. Esta opcao descarta toda a planilha e, nao grava [/S(ave)] os dados no disco.
+
+     N(o) --- Retorna para a planilha corrente.
+
+     T(o) --- Pergunta qual e o proximo programa que deseja executar. O SuperCalc2 finaliza (assim como a opcao Y) e automaticamente executa o programa de acordo com o nome que foi entrado.
+J Opcoes do Zap:
+
+     Y(es) -- Apaga toda a planilha, incluindo todos os formatos, definicoes e marcacoes.
+
+     N(o) --- Retorna o controle a planilha corrente.
+
+     C(ontents) Apaga os conteudos e formatos da planilha, mas salva a tabela de formatos definidos pelo usuario como uso corrente.
+K Opcao de janelas (divisao da tela):
+
+     H(orizontal) -- Divide a tela como duas janelas na linha corrente.
+
+     V(ertical) ---- Divide a tela como duas janelas na coluna corrente.
+
+     C(lear) ------- Apaga a divisao da tela (retorna como uma janela simples).
+
+     S(ynchronize) - Sincroniza o "scroll" nas janelas quando o cursor se mover paralelamente a divisao.
+
+     U(nsynch.) ---- Tira o sincronismo do "scroll". As janelas fazem um "scroll" de modo independente.
+L Opcoes de formato:
+
+   Entre um dos seguintes tipos para carregar a marcacao corrente dos formatos.
+
+     I(nteger) - Mostra os numeros inteiros, arredondado quando nescessario para produzir numeros inteiros.
+     $ --------- Mostra os numeros com dois digitos apos o ponto decimal.
+     E(xpoent) - Mostra os numeros como notacao cientifica.
+     G(eneral) - Mostra os numeros inteiros se o numero tiver um valor integral, ou em formato decimal se a largura da coluna permitir.
+     * --------- Mostra os numeros como asteriscos para representar graficos.
+     U(ser-defined) 1-8 - Seleciona a opcao de formatos definidos pelo usuario (acessado por /Format,Define).
+     H(ide) ----- Esconde os dados da planilha, mostrando como se estivessem vazias.
+
+   Entre as seguintes marcacoes para um controle adicional dos formatos:
+     R(ight) -- Mostra os numeros com justificacao a direita.
+     L(eft) --- Mostra os numeros com justificacao a esquerda.
+     T(ext)L(eft) - Mostra o texto com justificacao a esquerda.
+     T(ext)R(ight)- Mostra o texto com justificacao a direita.
+     0 - 127 -- Tamanho da coluna para os formatos Global ou Coluna.
+     D(efault)- Apaga o nivel de formatos especificados.
+M Opcoes de Load:
+
+     A(ll) ---- Carrega uma planilha completa do disco e apaga todas as marcacoes dos formatos, definicoes, e marcacoes do formato Global definidos anteriormente.
+
+     P(art) --- Carrega uma parte especificada da planilha do disco para uma parte especificada da planilha na memoria. As marcacoes do formato Global nao sao carregadas.
+
+     C(onsolidate) - Soma os valores das celulas da planilha do disco com os valores correspondentes das celulas na planilha correspondente. (Equivalente ao /Load,[arquivo],Part,All,A1,+.)
+N Opcoes de saida de relatorios:
+
+     D(isplay) -- Gera um relatorio formatado em linhas e colunas, essencialmente como a planilha e mostrada.
+
+     C(ontents) - Mostra o conteudo exato (texto ou formulas) de todas as celulas ocupadas, uma por linha.
+O Opcoes de salvar a planilha no disco:
+
+     A(ll) ---- Texto, formulas, valores correntes, e todas as marcacoes de formatos e definicoes da planilha sao gravados no disco.
+
+     V(alues) - Somente o texto e os valores correntes das formulas (mas nao as formulas em si) sao gravados.
+
+     P(art) --- Permite escolher das opcoes precedentes uma parte da planilha.
+P Opcoes de Entrada/Edicao:
+
+   O primeiro caracter determina se a entranda e uma formula ou um texto (label). As aspas ["] inicia um texto. Um apostrofo ['] inicia a repeticao de um texto e qualquer outro caracter inicia uma formula.
+
+   Quando entrando dados, as setas de cursor (que normalmente realizam um "scroll" em torno da planilha) e que se tornam teclas de edicao sao:
+
+     Seta p/ a esquerda - Retrocede um caracter.
+
+     Seta p/ a direita -- Move um caracter para a direita.
+
+     Seta p/ cima ------- Insere um espaco.
+
+     Seta p/ baixo ------ Apaga um caracter.
+
+   Outras teclas que tambem funcionam na edicao de entrada de linhas sao:
+
+     [TAB]  - Movimenta o cursor para o fim da linha de edicao se estiver no inicio, ou para o inicio, se estiver em qualquer outra posicao.
+
+     [ESC]  - Aceita a localizacao do cursor da planilha como entrada. Apos pressionar [ESC], as teclas com setas podem mover o cursor da planilha para a celula desejada, e qualquer outra tecla (como +,-,*,/,etc.) fixam a posicao da celula corrente como entrada. Para sair deste modo, pressione [ESC] novamente e edite a linha ou pressione <RETURN> para entrar uma linha inteira.
+Q Opcoes de saidas [/O]:
+
+     P(rinter) - Imprime um relatorio da planilha, usando os codigos de "default" do SuperCalc2.
+
+     S(etup) --- Imprime um relatorio (como a opcao "P"), mas permite que sejam especificados os codigos especiais da impressora como o tamanho da pagina, o comprimento da pagina, o Form-Feed automatico ou Double Space (espacamento duplo).
+
+     C(onsole) - Mostra o relatorio na tela como se fosse impresso (para um teste previo).
+
+     D(isk) ---- Envia o relatorio para um arquivo de disco (com uma extensao .PRN, a menos que seja especificado outra extensao) para ser usado depois.
+R Opcoes de Delete:
+
+     R(ow) ---- Apaga uma faixa inteira de linhas da planilha.
+
+     C(olumn) - Apaga uma faixa inteira de colunas.
+
+     F(ile) --- Apaga (definitivamente) um arquivo que existe correntemente no disco. (Pressione [ESC] para entrar o nome corrente do arquivo como linha de comando.)
+S Opcoes de arranjo:
+
+     Sequencia de ordenacao - As linhas e colunas sao ordenadas (independentemente de ser selecionado Ascendente ou Descendente) na seguinte ordem do conteudo das celulas:
+
+     Celulas de texto.
+     Celulas de valores textuais.
+     Celulas de valores de datas.
+     Celulas de valor numerico.
+     Celulas vazias.
+
+     Ascending -- Ordena uma faixa em ordem ascendente (espaco; simbolos em ordem ASCII; texto a,A,...,z,Z; numeros 0,1,...)
+
+
+     Descending - Ordena uma faixa em ordem descendente (numeros 9-0; texto Z,z,...,A,a; simbolos ASCII em ordem reversa; espaco)
+
+   A(djust)?
+
+     Y(es) --- Ajusta as referencias das celulas apos a ordenacao.
+     N(o) ---- Permite que todas as referencias das celulas fiquem inalteradas.
+T
+Bem-vindo ao SuperCalc2
+
+O programa SuperCalc2 e uma planilha eletronica poderosa e facil de usar que, pode ajuda-lo a resolver uma serie de problemas financeiros, comerciais, e problemas de engenharia e cientificos.
+
+Quando voce inicia o programa, a planilha do SuperCalc2 esta vazia. A planilha e uma rede de celulas, linhas e colunas que podem ser carregadas com um tipo de informacao. As celulas sao identificadas por posicoes de colunas e linhas (como A1 ou BK254).
+
+Voce pode entrar diferentes tipos de informacao ou dados em uma celula. Voce pode entrar (uma por celula):
+
+     NUMEROS ou valores numericos;
+     FORMULAS ou calculos matematicos.
+Estas formulas podem consistir de numeros ou identificadores de celulas, simbolos matematicos e funcoes;
+     TEXTO para rotulos e descricoes.
+
+Quando voce iniciar a entrada de algum tipo de dado, este ira aparecer primeiro na ultima linha da tela em uma das tres linhas de "status".
+E se for digitado <RETURN>, ou <CR>, ou <ENTER>, este dado sera colocado na planilha na posicao atual do cursor.
+
+Se voce tiver duvida sobre o comando que voce entrou, digite "?", que o SuperCalc2 ira imprimir (de acordo com o que foi feito), um tela de HELP (ajuda) para que possa ser tirada alguma duvida. Para sair da tela de HELP, digite qualquer caracter.
+
+O melhor meio para que se possa entender o SuperCalc2 e praticando. Para isso, leia com atencao o manual que acompanha o SuperCalc2, fazendo todos os exemplos por mais simples que sejam.
+!   Notas:
