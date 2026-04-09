@@ -3,7 +3,7 @@
 > ⚠️ **Trabalho em progresso** — Este projeto está sendo construído aos poucos,
 > com calma e cuidado, peça por peça. Não é um produto acabado.
 
-![SC2MSX em execução](images/sc2-01.png)
+![SC2MSX em execução](image/sc2-01.png)
 
 ---
 
