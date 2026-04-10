@@ -1,5 +1,13 @@
 // internal/spreadsheet/model.go
-// Modelo de dados da planilha - compatível com SuperCalc 2 MSX
+// Modelo de dados da planilha - compativel com SuperCalc 2 MSX
+//
+// Comportamento fiel ao SC2 MSX original:
+//   - Planilha esparsa: 254 linhas x 63 colunas (A..BK)
+//   - Celulas: vazio, texto (L), numero (V), formula (F)
+//   - Texto: alinhado a esquerda, truncado na borda da celula (SEM overflow)
+//   - Numero: alinhado a direita, "**...*" se nao couber
+//   - Largura de coluna padrao: 9 caracteres
+//   - Coordenadas: A1..BK254
 package spreadsheet
 
 import (
@@ -9,190 +17,158 @@ import (
 	"strings"
 )
 
-// CellType representa o tipo de conteúdo de uma célula
+// CellType - tipo do conteudo da celula
 type CellType int
 
 const (
 	CellEmpty   CellType = iota
-	CellText             // Label/String (começa com " ou letra)
-	CellNumber           // Valor numérico
-	CellFormula          // Fórmula (começa com +, -, (, @, ou número)
+	CellText             // (L) Label - texto
+	CellNumber           // (V) Value - numero
+	CellFormula          // (F) Formula - expressao
 )
 
-// Alinhamento da célula
+// Alignment - alinhamento na celula
 type Alignment int
 
 const (
-	AlignDefault Alignment = iota // Default: texto=esquerda, número=direita
+	AlignDefault Alignment = iota // texto=esq, numero=dir
 	AlignLeft
 	AlignRight
 	AlignCenter
 )
 
-// Cell representa uma célula da planilha
-type Cell struct {
-	// Conteúdo bruto digitado pelo usuário
-	RawInput string
-
-	// Tipo da célula
-	Type CellType
-
-	// Valor numérico (se CellNumber ou CellFormula com resultado numérico)
-	NumericValue float64
-
-	// Valor de texto (se CellText)
-	TextValue string
-
-	// Fórmula (se CellFormula)
-	Formula string
-
-	// Formato de exibição (número de casas decimais, etc)
-	Format CellFormat
-
-	// Alinhamento
-	Align Alignment
-
-	// Largura da coluna (não é da célula em si, mas usamos aqui como override)
-	Protected bool
-}
-
-// CellFormat define como o valor é exibido
-type CellFormat struct {
-	Type      FormatType
-	Decimals  int  // casas decimais (0-9)
-	Commas    bool // separador de milhares
-}
-
+// FormatType - tipo de formatacao numerica (comando /Format do SC2)
 type FormatType int
 
 const (
-	FormatGeneral FormatType = iota // G - geral
-	FormatDefault                   // D - default (integer)
-	FormatInteger                   // I - inteiro
-	FormatFixed                     // F - ponto fixo
-	FormatScientific                // S - científico (E notation)
-	FormatDollar                    // $ - dólar
-	FormatPercent                   // % - percentual
-	FormatBar                       // * - barra gráfica
+	FormatGeneral    FormatType = iota // G - inteiro se possivel, senao float
+	FormatDefault                      // D - padrao (2 casas decimais)
+	FormatInteger                      // I - inteiro (sem decimais)
+	FormatFixed                        // F - ponto fixo (N casas)
+	FormatScientific                   // S - notacao cientifica
+	FormatDollar                       // $ - moeda
+	FormatPercent                      // % - percentual
+	FormatBar                          // * - barra grafica (SC2 especial)
 )
 
-// Coord representa uma coordenada de célula (linha, coluna)
-type Coord struct {
-	Row int // 1-based (1..254 no SC2)
-	Col int // 1-based (1..63 no SC2, A..BK)
+// CellFormat - formatacao da celula (definida por /Format no SC2)
+type CellFormat struct {
+	Type     FormatType
+	Decimals int  // 0-9 casas decimais
+	Commas   bool // separador de milhares
 }
 
-// String converte Coord para notação SC2 (ex: A1, B12, AA3)
+// Cell - uma celula da planilha
+type Cell struct {
+	RawInput     string // Conteudo bruto digitado
+	Type         CellType
+	NumericValue float64 // Valor numerico (CellNumber ou resultado de CellFormula)
+	TextValue    string  // Valor texto (CellText) ou codigo de erro de formula
+	Formula      string  // Expressao original (CellFormula)
+	Format       CellFormat
+	Align        Alignment
+	Protected    bool
+}
+
+// Coord - coordenada de celula (1-based)
+type Coord struct {
+	Row int // 1..254
+	Col int // 1..63 (A=1 .. BK=63)
+}
+
 func (c Coord) String() string {
 	return ColName(c.Col) + strconv.Itoa(c.Row)
 }
 
-// ColName converte número de coluna (1-based) para letra(s)
-// SC2 MSX suporta até 63 colunas: A-Z (1-26), AA-AZ (27-52), BA-BK (53-63)
+// ColName converte numero de coluna para nome SC2
+// 1=A, 2=B ... 26=Z, 27=AA, 28=AB ... 52=AZ, 53=BA ... 63=BK
 func ColName(col int) string {
-	if col <= 0 {
+	if col < 1 {
 		return "?"
 	}
 	if col <= 26 {
 		return string(rune('A' + col - 1))
 	}
-	// Dupla letra
-	first := (col-1)/26 - 1
-	second := (col-1)%26
-	// Ajuste SC2: AA=27, AB=28... AZ=52, BA=53...
-	major := (col - 27) / 26
-	minor := (col - 27) % 26
-	_ = first
-	_ = second
+	// Dupla letra: col 27 = AA
+	col -= 27
+	major := col / 26
+	minor := col % 26
 	return string(rune('A'+major)) + string(rune('A'+minor))
 }
 
 // ParseCoord converte string de coordenada para Coord
-// Ex: "A1" -> {1,1}, "B12" -> {12,2}, "AA3" -> {3,27}
+// Aceita: A1, B12, AA3, BK254 (case insensitive)
 func ParseCoord(s string) (Coord, error) {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	if len(s) < 2 {
-		return Coord{}, fmt.Errorf("coordenada inválida: %s", s)
+		return Coord{}, fmt.Errorf("coordenada invalida: %s", s)
 	}
 
-	// Encontra onde terminam as letras
 	i := 0
 	for i < len(s) && s[i] >= 'A' && s[i] <= 'Z' {
 		i++
 	}
 	if i == 0 || i == len(s) {
-		return Coord{}, fmt.Errorf("coordenada inválida: %s", s)
+		return Coord{}, fmt.Errorf("coordenada invalida: %s", s)
 	}
 
 	colStr := s[:i]
 	rowStr := s[i:]
 
 	row, err := strconv.Atoi(rowStr)
-	if err != nil || row < 1 {
-		return Coord{}, fmt.Errorf("linha inválida: %s", rowStr)
+	if err != nil || row < 1 || row > 254 {
+		return Coord{}, fmt.Errorf("linha invalida: %s (1-254)", rowStr)
 	}
 
 	var col int
-	if len(colStr) == 1 {
+	switch len(colStr) {
+	case 1:
 		col = int(colStr[0]-'A') + 1
-	} else if len(colStr) == 2 {
+	case 2:
 		col = (int(colStr[0]-'A')+1)*26 + int(colStr[1]-'A') + 1
-	} else {
-		return Coord{}, fmt.Errorf("coluna inválida: %s", colStr)
+	default:
+		return Coord{}, fmt.Errorf("coluna invalida: %s", colStr)
+	}
+
+	if col < 1 || col > 63 {
+		return Coord{}, fmt.Errorf("coluna invalida: %s (A-BK)", colStr)
 	}
 
 	return Coord{Row: row, Col: col}, nil
 }
 
-// Spreadsheet é a planilha principal
+// Spreadsheet - a planilha
 type Spreadsheet struct {
-	// Células armazenadas como map para eficiência (planilha esparsa)
-	Cells map[Coord]*Cell
-
-	// Largura das colunas (em caracteres). Default: 9
-	ColWidths map[int]int
-
-	// Altura das linhas (SC2 sempre 1, mas mantemos por extensibilidade)
-	// RowHeights map[int]int
-
-	// Cursor atual
-	Cursor Coord
-
-	// Janela de visualização (primeira linha/coluna visível)
-	ViewRow int
-	ViewCol int
-
-	// Nome do arquivo atual
-	Filename string
-
-	// Flag de modificação
-	Modified bool
-
-	// Configurações globais
+	Cells         map[Coord]*Cell
+	ColWidths     map[int]int // largura por coluna (default: 9)
+	Cursor        Coord
+	ViewRow       int // primeira linha visivel
+	ViewCol       int // primeira coluna visivel
+	Filename      string
+	Modified      bool
 	DefaultFormat CellFormat
 	DefaultWidth  int
-	
-	// Título da planilha (não existe no SC2 original, mas útil)
-	Title string
+	Title         string // titulo global (/Title no SC2)
+
+	// Titulos fixos (freeze) - /Title Horizontal e /Title Vertical do SC2
+	TitleRow int // linha de titulo fixo (0 = nenhum)
+	TitleCol int // coluna de titulo fixo (0 = nenhum)
 }
 
-// NewSpreadsheet cria uma planilha nova vazia
+// NewSpreadsheet cria planilha vazia com defaults do SC2
 func NewSpreadsheet() *Spreadsheet {
 	return &Spreadsheet{
-		Cells:     make(map[Coord]*Cell),
-		ColWidths: make(map[int]int),
-		Cursor:    Coord{Row: 1, Col: 1},
-		ViewRow:   1,
-		ViewCol:   1,
-		DefaultFormat: CellFormat{
-			Type:     FormatGeneral,
-			Decimals: 2,
-		},
-		DefaultWidth: 9,
+		Cells:         make(map[Coord]*Cell),
+		ColWidths:     make(map[int]int),
+		Cursor:        Coord{Row: 1, Col: 1},
+		ViewRow:       1,
+		ViewCol:       1,
+		DefaultFormat: CellFormat{Type: FormatGeneral, Decimals: 2},
+		DefaultWidth:  9,
 	}
 }
 
-// GetCell retorna a célula na coordenada (nunca nil - cria se não existir)
+// GetCell retorna celula (nunca nil - retorna celula vazia se nao existir)
 func (s *Spreadsheet) GetCell(c Coord) *Cell {
 	if cell, ok := s.Cells[c]; ok {
 		return cell
@@ -200,25 +176,45 @@ func (s *Spreadsheet) GetCell(c Coord) *Cell {
 	return &Cell{Type: CellEmpty}
 }
 
-// SetCell define uma célula
+// SetCell grava celula (nil ou CellEmpty remove do map)
 func (s *Spreadsheet) SetCell(c Coord, cell *Cell) {
 	if cell == nil || cell.Type == CellEmpty {
 		delete(s.Cells, c)
-		return
+	} else {
+		s.Cells[c] = cell
 	}
-	s.Cells[c] = cell
 	s.Modified = true
 }
 
-// GetColWidth retorna a largura da coluna (usa default se não definida)
+// GetColWidth retorna largura da coluna (default SC2 = 9)
 func (s *Spreadsheet) GetColWidth(col int) int {
-	if w, ok := s.ColWidths[col]; ok {
+	if w, ok := s.ColWidths[col]; ok && w > 0 {
 		return w
 	}
 	return s.DefaultWidth
 }
 
-// FormatCellValue formata o valor de uma célula para exibição
+// SetColWidth define largura de coluna (comando /Width do SC2)
+// SC2 aceita 1-72
+func (s *Spreadsheet) SetColWidth(col, w int) {
+	if w < 1 {
+		w = 1
+	}
+	if w > 72 {
+		w = 72
+	}
+	s.ColWidths[col] = w
+}
+
+// ─── Formatacao de celula para exibicao ──────────────────────────────────────
+
+// FormatCellValue formata o valor de uma celula para caber em 'width' caracteres
+// Comportamento fiel ao SC2 MSX:
+//
+//	Texto:  alinhado a esquerda, truncado na borda (SEM overflow para proxima celula)
+//	Numero: alinhado a direita, "****" se nao couber
+//	Erro:   codigo de erro centralizado (ex: #DIV/0!)
+//	Vazio:  espacos
 func (s *Spreadsheet) FormatCellValue(cell *Cell, width int) string {
 	if cell == nil || cell.Type == CellEmpty {
 		return strings.Repeat(" ", width)
@@ -226,116 +222,222 @@ func (s *Spreadsheet) FormatCellValue(cell *Cell, width int) string {
 
 	switch cell.Type {
 	case CellText:
-		// Texto: alinha à esquerda, trunca se necessário
-		text := cell.TextValue
-		if len(text) > width {
-			text = text[:width]
-		}
-		return fmt.Sprintf("%-*s", width, text)
+		return formatText(cell.TextValue, cell.Align, width)
 
 	case CellNumber, CellFormula:
-		// Se formula com erro, exibe o codigo de erro alinhado a direita
+		// Formula com erro
 		if cell.TextValue != "" && strings.HasPrefix(cell.TextValue, "#") {
-			errStr := cell.TextValue
-			if len(errStr) > width {
-				return strings.Repeat("*", width)
-			}
-			return fmt.Sprintf("%*s", width, errStr)
+			return formatError(cell.TextValue, width)
 		}
-		// Numero: alinha a direita
-		formatted := formatNumber(cell.NumericValue, cell.Format, width)
-		if len(formatted) > width {
-			// Overflow: exibe asteriscos (padrao SC2)
-			return strings.Repeat("*", width)
-		}
-		return fmt.Sprintf("%*s", width, formatted)
+		return formatNumeric(cell.NumericValue, cell.Format, width)
 	}
 
 	return strings.Repeat(" ", width)
 }
 
-// formatNumber converte float64 para string conforme o formato
-func formatNumber(v float64, f CellFormat, width int) string {
-	switch f.Type {
-	case FormatGeneral, FormatDefault:
-		// Inteiro se não tiver decimal relevante
-		if v == math.Trunc(v) && math.Abs(v) < 1e12 {
-			return fmt.Sprintf("%.0f", v)
-		}
-		return strconv.FormatFloat(v, 'g', -1, 64)
+// formatText - texto alinhado a esquerda, truncado (SC2 nao faz overflow)
+func formatText(text string, align Alignment, width int) string {
+	runes := []rune(text)
+	if len(runes) > width {
+		runes = runes[:width]
+	}
+	s := string(runes)
+	switch align {
+	case AlignRight:
+		return fmt.Sprintf("%*s", width, s)
+	case AlignCenter:
+		pad := width - len([]rune(s))
+		pL := pad / 2
+		pR := pad - pL
+		return strings.Repeat(" ", pL) + s + strings.Repeat(" ", pR)
+	default: // AlignLeft, AlignDefault
+		return fmt.Sprintf("%-*s", width, s)
+	}
+}
 
-	case FormatFixed:
-		dec := f.Decimals
-		if dec < 0 { dec = 2 }
-		return fmt.Sprintf("%."+strconv.Itoa(dec)+"f", v)
+// formatError - codigo de erro (ex: #DIV/0!) centralizado ou truncado
+func formatError(code string, width int) string {
+	if len(code) > width {
+		return strings.Repeat("*", width)
+	}
+	// Centraliza o codigo de erro
+	pad := width - len(code)
+	pL := pad / 2
+	pR := pad - pL
+	return strings.Repeat(" ", pL) + code + strings.Repeat(" ", pR)
+}
+
+// formatNumeric - numero alinhado a direita, asteriscos se nao couber
+func formatNumeric(v float64, f CellFormat, width int) string {
+	s := formatNumber(v, f)
+	if len(s) > width {
+		return strings.Repeat("*", width) // Overflow: SC2 exibe ****
+	}
+	return fmt.Sprintf("%*s", width, s)
+}
+
+// formatNumber converte float64 para string no formato especificado
+func formatNumber(v float64, f CellFormat) string {
+	dec := f.Decimals
+	if dec < 0 {
+		dec = 2
+	}
+
+	switch f.Type {
+	case FormatGeneral:
+		// SC2 General: se inteiro exato, sem decimais; senao ate 6 sig digits
+		if v == math.Trunc(v) && math.Abs(v) < 1e12 {
+			s := fmt.Sprintf("%.0f", v)
+			if f.Commas {
+				s = addCommas(s)
+			}
+			return s
+		}
+		s := fmt.Sprintf("%.6g", v)
+		return s
+
+	case FormatDefault:
+		// D: 2 casas decimais (padrao SC2)
+		s := fmt.Sprintf("%.2f", v)
+		if f.Commas {
+			s = addCommasFloat(s)
+		}
+		return s
 
 	case FormatInteger:
-		return fmt.Sprintf("%.0f", v)
+		// I: inteiro (trunca)
+		s := fmt.Sprintf("%.0f", math.Trunc(v))
+		if f.Commas {
+			s = addCommas(s)
+		}
+		return s
+
+	case FormatFixed:
+		// F: ponto fixo com N casas
+		s := fmt.Sprintf("%."+strconv.Itoa(dec)+"f", v)
+		if f.Commas {
+			s = addCommasFloat(s)
+		}
+		return s
 
 	case FormatScientific:
-		dec := f.Decimals
-		if dec < 0 { dec = 2 }
+		// S: notacao cientifica
 		return fmt.Sprintf("%."+strconv.Itoa(dec)+"E", v)
 
 	case FormatDollar:
-		dec := f.Decimals
-		if dec < 0 { dec = 2 }
-		if v < 0 {
-			return fmt.Sprintf("-$%."+strconv.Itoa(dec)+"f", -v)
+		// $: moeda
+		s := fmt.Sprintf("%."+strconv.Itoa(dec)+"f", math.Abs(v))
+		if f.Commas {
+			s = addCommasFloat(s)
 		}
-		return fmt.Sprintf("$%."+strconv.Itoa(dec)+"f", v)
+		if v < 0 {
+			return "-$" + s
+		}
+		return "$" + s
 
 	case FormatPercent:
-		dec := f.Decimals
-		if dec < 0 { dec = 2 }
+		// %: percentual
 		return fmt.Sprintf("%."+strconv.Itoa(dec)+"f%%", v*100)
+
+	case FormatBar:
+		// *: barra grafica SC2 - exibe '*' repetido proporcional ao valor
+		// (usado em graficos de texto)
+		n := int(math.Abs(v))
+		if n > 50 {
+			n = 50
+		}
+		return strings.Repeat("*", n)
 	}
 
 	return fmt.Sprintf("%v", v)
 }
 
-// MoveCursor move o cursor na planilha
-func (s *Spreadsheet) MoveCursor(dRow, dCol int) {
-	newRow := s.Cursor.Row + dRow
-	newCol := s.Cursor.Col + dCol
-
-	// Limites SC2 MSX: 254 linhas, 63 colunas
-	if newRow < 1 { newRow = 1 }
-	if newRow > 254 { newRow = 254 }
-	if newCol < 1 { newCol = 1 }
-	if newCol > 63 { newCol = 63 }
-
-	s.Cursor = Coord{Row: newRow, Col: newCol}
+// addCommas insere separadores de milhar em string inteira
+func addCommas(s string) string {
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	n := len(s)
+	if n <= 3 {
+		if neg {
+			return "-" + s
+		}
+		return s
+	}
+	var b strings.Builder
+	for i, ch := range s {
+		if i > 0 && (n-i)%3 == 0 {
+			b.WriteRune('.')
+		}
+		b.WriteRune(ch)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
-// AdjustView ajusta a janela de visualização para manter o cursor visível
-// visRows e visCols são o número de linhas/colunas visíveis na tela
+// addCommasFloat insere separadores de milhar em string float (antes do ponto)
+func addCommasFloat(s string) string {
+	dot := strings.Index(s, ".")
+	if dot < 0 {
+		return addCommas(s)
+	}
+	return addCommas(s[:dot]) + s[dot:]
+}
+
+// ─── Movimentacao e scroll ────────────────────────────────────────────────────
+
+// MoveCursor move o cursor respeitando limites SC2 (254 linhas, 63 colunas)
+func (s *Spreadsheet) MoveCursor(dRow, dCol int) {
+	r := s.Cursor.Row + dRow
+	c := s.Cursor.Col + dCol
+	if r < 1 {
+		r = 1
+	}
+	if r > 254 {
+		r = 254
+	}
+	if c < 1 {
+		c = 1
+	}
+	if c > 63 {
+		c = 63
+	}
+	s.Cursor = Coord{Row: r, Col: c}
+}
+
+// AdjustView ajusta a janela de visualizacao para manter cursor visivel
 func (s *Spreadsheet) AdjustView(visRows, visCols int) {
-	// Scroll vertical
+	// Vertical
 	if s.Cursor.Row < s.ViewRow {
 		s.ViewRow = s.Cursor.Row
 	} else if s.Cursor.Row >= s.ViewRow+visRows {
 		s.ViewRow = s.Cursor.Row - visRows + 1
 	}
-
-	// Scroll horizontal
+	// Horizontal
 	if s.Cursor.Col < s.ViewCol {
 		s.ViewCol = s.Cursor.Col
 	} else if s.Cursor.Col >= s.ViewCol+visCols {
 		s.ViewCol = s.Cursor.Col - visCols + 1
 	}
-
-	if s.ViewRow < 1 { s.ViewRow = 1 }
-	if s.ViewCol < 1 { s.ViewCol = 1 }
+	if s.ViewRow < 1 {
+		s.ViewRow = 1
+	}
+	if s.ViewCol < 1 {
+		s.ViewCol = 1
+	}
 }
+
+// ─── Recalculo ────────────────────────────────────────────────────────────────
 
 // Recalc recalcula todas as formulas da planilha
 func (s *Spreadsheet) Recalc() {
-	e := NewEvaluator(s)
-	e.Recalc()
+	NewEvaluator(s).Recalc()
 }
 
-// EvalCellFormula avalia a formula de uma celula e atualiza seu valor
+// EvalCellFormula avalia formula de uma celula especifica
 func (s *Spreadsheet) EvalCellFormula(coord Coord) {
 	cell := s.GetCell(coord)
 	if cell.Type != CellFormula {
@@ -351,4 +453,86 @@ func (s *Spreadsheet) EvalCellFormula(coord Coord) {
 		cell.TextValue = ""
 	}
 	s.Cells[coord] = cell
+}
+
+// ─── Operacoes em bloco (base para /Copy, /Move, /Delete, /Insert) ───────────
+
+// ClearRange apaga todas as celulas em um retangulo
+func (s *Spreadsheet) ClearRange(from, to Coord) {
+	minR, maxR := from.Row, to.Row
+	minC, maxC := from.Col, to.Col
+	if minR > maxR {
+		minR, maxR = maxR, minR
+	}
+	if minC > maxC {
+		minC, maxC = maxC, minC
+	}
+	for r := minR; r <= maxR; r++ {
+		for c := minC; c <= maxC; c++ {
+			delete(s.Cells, Coord{Row: r, Col: c})
+		}
+	}
+	s.Modified = true
+}
+
+// InsertRow insere linha vazia em rowNum, empurra linhas abaixo para baixo
+func (s *Spreadsheet) InsertRow(rowNum int) {
+	newCells := make(map[Coord]*Cell)
+	for coord, cell := range s.Cells {
+		if coord.Row >= rowNum {
+			newCells[Coord{Row: coord.Row + 1, Col: coord.Col}] = cell
+		} else {
+			newCells[coord] = cell
+		}
+	}
+	s.Cells = newCells
+	s.Modified = true
+}
+
+// DeleteRow remove a linha rowNum e sobe as linhas abaixo
+func (s *Spreadsheet) DeleteRow(rowNum int) {
+	newCells := make(map[Coord]*Cell)
+	for coord, cell := range s.Cells {
+		if coord.Row == rowNum {
+			continue // remove
+		}
+		if coord.Row > rowNum {
+			newCells[Coord{Row: coord.Row - 1, Col: coord.Col}] = cell
+		} else {
+			newCells[coord] = cell
+		}
+	}
+	s.Cells = newCells
+	s.Modified = true
+}
+
+// InsertCol insere coluna vazia em colNum, empurra colunas a direita
+func (s *Spreadsheet) InsertCol(colNum int) {
+	newCells := make(map[Coord]*Cell)
+	for coord, cell := range s.Cells {
+		if coord.Col >= colNum {
+			newCells[Coord{Row: coord.Row, Col: coord.Col + 1}] = cell
+		} else {
+			newCells[coord] = cell
+		}
+	}
+	s.Cells = newCells
+	s.Modified = true
+}
+
+// DeleteCol remove a coluna colNum e move as demais para a esquerda
+func (s *Spreadsheet) DeleteCol(colNum int) {
+	newCells := make(map[Coord]*Cell)
+	for coord, cell := range s.Cells {
+		if coord.Col == colNum {
+			continue
+		}
+		if coord.Col > colNum {
+			newCells[Coord{Row: coord.Row, Col: coord.Col - 1}] = cell
+		} else {
+			newCells[coord] = cell
+		}
+	}
+	s.Cells = newCells
+	s.Modified = true
 }

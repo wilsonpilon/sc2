@@ -1,10 +1,28 @@
 // internal/ui/grid.go
-// Tela principal da planilha - simula monitor 80x24 do MSX
-// Layout fiel ao SuperCalc 2 MSX original
+// Tela principal da planilha SC2 MSX - fiel ao original
+//
+// Layout exato do SuperCalc 2 MSX (80 colunas x 24 linhas):
+//
+//  Linha  0: [coord:valor ] [ conteudo da celula           ] [mem:NNNNN]
+//  Linha  1: [   ][  A  ][  B  ][  C  ]...
+//  Linhas 2-21: [NNN][dado ][dado ][dado ]...   (20 linhas de dados)
+//  Linha 22: barra de entrada / status
+//  Linha 23: barra de modo / ajuda rapida
+//
+// Comportamento SC2 original:
+//  - Cursor invertido na celula atual
+//  - Linha de status mostra: coordenada, tipo (V/L/F), conteudo bruto
+//  - Entrada: qualquer tecla alfanumerica inicia edicao
+//  - "/" abre menu de comandos (linha 22 mostra opcoes)
+//  - Formulas mostram valor na celula, formula na linha de status
+//  - Overflow de numero: "**********" (asteriscos)
+//  - Texto mais largo que coluna: truncado (sem overflow para proxima)
+
 package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -14,263 +32,149 @@ import (
 	"github.com/sc2msx/internal/spreadsheet"
 )
 
-// Constantes de layout - tela 80x24 como no MSX
+// Layout fixo SC2 MSX
 const (
-	SC2_COLS        = 80  // Largura da tela
-	SC2_ROWS        = 24  // Altura total da tela
-	SC2_HEADER_ROWS = 2   // Linhas de cabeçalho (linha de status + linha de colunas)
-	SC2_CMD_ROWS    = 2   // Linhas da barra de comandos (rodapé)
-	SC2_DATA_ROWS   = SC2_ROWS - SC2_HEADER_ROWS - SC2_CMD_ROWS // 20 linhas de dados
-	SC2_ROW_NUM_W   = 3   // Largura da coluna de números de linha (ex: "  1", " 12")
-	SC2_SEP_W       = 1   // Separador "|"
+	SC2_TOTAL_ROWS    = 24                                              // Altura total da tela MSX
+	SC2_TOTAL_COLS    = 80                                              // Largura total da tela MSX
+	SC2_HEADER_ROWS   = 2                                               // Linha de status + linha de colunas
+	SC2_CMD_ROWS      = 2                                               // Duas linhas de barra de comandos
+	SC2_DATA_ROWS     = SC2_TOTAL_ROWS - SC2_HEADER_ROWS - SC2_CMD_ROWS // 20
+	SC2_ROW_NUM_W     = 3                                               // Largura do numero de linha (ex: "  1")
+	SC2_SEP_W         = 1                                               // Separador "|"
+	SC2_DEFAULT_COL_W = 9                                               // Largura padrao de coluna no SC2 original
 )
 
-// GridView é a tela principal da planilha
-type GridView struct {
-	*tview.Box
-
-	// Planilha
-	sheet *spreadsheet.Spreadsheet
-
-	// Modo de entrada
-	mode InputMode
-
-	// Buffer de entrada do usuário
-	inputBuffer string
-
-	// Linha de status
-	statusMsg string
-
-	// Callbacks
-	onCommand func(cmd string)
-}
-
-// InputMode define o modo atual da planilha
+// Modo de operacao da planilha
 type InputMode int
 
 const (
-	ModeNormal  InputMode = iota // Navegação normal
-	ModeInput                   // Digitando valor/fórmula
-	ModeCommand                 // Após pressionar "/"
+	ModeNormal  InputMode = iota // Navegacao
+	ModeInput                    // Digitando conteudo
+	ModeCommand                  // Menu "/" aberto
+	ModeGoto                     // Goto celula (Ctrl+G ou F5)
 )
 
-// NewGridView cria a view principal da planilha
+// GridView e a view principal da planilha
+type GridView struct {
+	*tview.Box
+
+	sheet       *spreadsheet.Spreadsheet
+	mode        InputMode
+	inputBuffer string // Buffer do que o usuario esta digitando
+	statusMsg   string // Mensagem temporaria de status
+	onCommand   func(string)
+}
+
+// NewGridView cria a view principal
 func NewGridView(sheet *spreadsheet.Spreadsheet) *GridView {
 	g := &GridView{
 		Box:   tview.NewBox(),
 		sheet: sheet,
 		mode:  ModeNormal,
 	}
-
 	g.SetBorder(false)
 	g.SetInputCapture(g.handleInput)
-
 	return g
 }
 
-// SetCommandHandler define callback para comandos
-func (g *GridView) SetCommandHandler(fn func(cmd string)) {
-	g.onCommand = fn
-}
+func (g *GridView) SetCommandHandler(fn func(string)) { g.onCommand = fn }
+func (g *GridView) SetStatus(msg string)              { g.statusMsg = msg }
 
-// SetStatus define mensagem de status
-func (g *GridView) SetStatus(msg string) {
-	g.statusMsg = msg
-}
+// ─── Renderizacao ─────────────────────────────────────────────────────────────
 
-// Draw renderiza a planilha completa
 func (g *GridView) Draw(screen tcell.Screen) {
 	g.Box.DrawForSubclass(screen, g)
+	x, y, width, _ := g.GetInnerRect()
 
-	x, y, width, height := g.GetInnerRect()
-	_ = height
+	// ── Paleta de cores fiel ao SC2 MSX original ──
+	// SC2 usava: fundo preto, texto branco, cursor invertido (preto no branco)
+	// Cabecalho de linha/coluna: azul escuro
+	// Linha de status: azul com texto amarelo/branco
+	// Barra de comandos: azul escuro
 
-	// Estilos de cores (paleta MSX-like)
-	styleHeader := tcell.StyleDefault.
-		Background(tcell.ColorNavy).
-		Foreground(tcell.ColorWhite).
-		Bold(true)
+	sNormal := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorSilver)
+	sHeader := tcell.StyleDefault.Background(tcell.ColorNavy).Foreground(tcell.ColorWhite).Bold(true)
+	sColHL := tcell.StyleDefault.Background(tcell.ColorTeal).Foreground(tcell.ColorWhite).Bold(true)
+	sCursor := tcell.StyleDefault.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack).Bold(true)
+	sSep := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorNavy)
+	sCmd := tcell.StyleDefault.Background(tcell.ColorNavy).Foreground(tcell.ColorWhite)
+	sInput := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorYellow)
+	sError := tcell.StyleDefault.Background(tcell.ColorMaroon).Foreground(tcell.ColorWhite)
+	sFormula := tcell.StyleDefault.Background(tcell.ColorNavy).Foreground(tcell.ColorYellow)
 
-	styleColHeader := tcell.StyleDefault.
-		Background(tcell.ColorTeal).
-		Foreground(tcell.ColorWhite).
-		Bold(true)
+	// ── Linha 0: Status (coord + tipo + conteudo + mem) ──
+	g.drawStatusLine(screen, x, y, width, sHeader, sFormula)
 
-	styleRowNum := tcell.StyleDefault.
-		Background(tcell.ColorNavy).
-		Foreground(tcell.ColorWhite)
+	// ── Linha 1: Cabecalho de colunas ──
+	g.drawColHeader(screen, x, y+1, width, sHeader, sColHL, sSep)
 
-	styleCursor := tcell.StyleDefault.
-		Background(tcell.ColorWhite).
-		Foreground(tcell.ColorBlack).
-		Bold(true)
-
-	styleCell := tcell.StyleDefault.
-		Background(tcell.ColorBlack).
-		Foreground(tcell.ColorWhite)
-
-	styleFormula := tcell.StyleDefault.
-		Background(tcell.ColorBlack).
-		Foreground(tcell.ColorYellow)
-
-	styleSep := tcell.StyleDefault.
-		Background(tcell.ColorBlack).
-		Foreground(tcell.ColorGray)
-
-	styleCmdBar := tcell.StyleDefault.
-		Background(tcell.ColorNavy).
-		Foreground(tcell.ColorWhite)
-
-	styleInput := tcell.StyleDefault.
-		Background(tcell.ColorBlack).
-		Foreground(tcell.ColorYellow)
-
-	styleStatus := tcell.StyleDefault.
-		Background(tcell.ColorMaroon).
-		Foreground(tcell.ColorWhite)
-
-	// ─────────────────────────────────────────────────────────────
-	// LINHA 0: Linha de status superior (célula atual + conteúdo)
-	// Formato SC2: "A1: 9999  <conteúdo>"
-	// ─────────────────────────────────────────────────────────────
-	g.drawStatusLine(screen, x, y, width, styleHeader, styleFormula)
-
-	// ─────────────────────────────────────────────────────────────
-	// LINHA 1: Cabeçalho de colunas
-	// Formato SC2: "   |  A  |  B  |  C  | ..."
-	// ─────────────────────────────────────────────────────────────
-	g.drawColumnHeader(screen, x, y+1, width, styleColHeader, styleRowNum, styleSep)
-
-	// ─────────────────────────────────────────────────────────────
-	// LINHAS 2..21: Dados da planilha (20 linhas)
-	// ─────────────────────────────────────────────────────────────
-	visibleCols := g.calcVisibleCols(width)
+	// ── Linhas 2-21: Dados ──
+	visCols := g.calcVisCols(width)
 	for row := 0; row < SC2_DATA_ROWS; row++ {
 		sheetRow := g.sheet.ViewRow + row
-		screenY := y + SC2_HEADER_ROWS + row
-
-		// Número da linha (3 chars, alinhado à direita) - só dígitos ASCII, sem problema
-		rowNumStr := fmt.Sprintf("%3d", sheetRow)
-		gridDrawAt(screen, x, screenY, rowNumStr, styleRowNum)
-
-		// Separador "|"
-		screen.SetContent(x+SC2_ROW_NUM_W, screenY, '|', nil, styleSep)
-
-		// Células das colunas visíveis
-		cellX := x + SC2_ROW_NUM_W + SC2_SEP_W
-		for ci, col := range visibleCols {
-			colW := g.sheet.GetColWidth(col)
-			coord := spreadsheet.Coord{Row: sheetRow, Col: col}
-			cell := g.sheet.GetCell(coord)
-			isCursor := coord == g.sheet.Cursor
-
-			// Formata o valor para exibição
-			display := g.sheet.FormatCellValue(cell, colW)
-			if len([]rune(display)) > colW {
-				display = display[:colW]
-			}
-			// Pad se necessário
-			for len([]rune(display)) < colW {
-				display += " "
-			}
-
-			// Escolhe estilo
-			var cellStyle tcell.Style
-			if isCursor {
-				cellStyle = styleCursor
-			} else {
-				cellStyle = styleCell
-			}
-
-			// Desenha o conteúdo da célula usando largura visual correta
-			gridDrawAt(screen, cellX, screenY, display, cellStyle)
-
-			cellX += colW
-
-			// Separador entre colunas ("|")
-			if ci < len(visibleCols)-1 && cellX < x+width-1 {
-				screen.SetContent(cellX, screenY, '|', nil, styleSep)
-				cellX++
-			}
-
-			// Não ultrapassa a largura da tela
-			if cellX >= x+width {
-				break
-			}
-		}
-
-		// Preenche o resto da linha com espaço
-		for cx := cellX; cx < x+width; cx++ {
-			screen.SetContent(cx, screenY, ' ', nil, styleCell)
-		}
+		sy := y + SC2_HEADER_ROWS + row
+		g.drawDataRow(screen, x, sy, width, sheetRow, visCols, sNormal, sHeader, sSep, sCursor)
 	}
 
-	// ─────────────────────────────────────────────────────────────
-	// LINHA 22: Barra de comandos - linha 1
-	// ─────────────────────────────────────────────────────────────
-	cmdY1 := y + SC2_HEADER_ROWS + SC2_DATA_ROWS
-	g.drawCmdLine1(screen, x, cmdY1, width, styleCmdBar, styleInput, styleStatus)
+	// ── Linha 22: Barra principal (entrada / comando / status) ──
+	g.drawCmdBar1(screen, x, y+SC2_HEADER_ROWS+SC2_DATA_ROWS, width, sCmd, sInput, sError)
 
-	// ─────────────────────────────────────────────────────────────
-	// LINHA 23: Barra de comandos - linha 2
-	// ─────────────────────────────────────────────────────────────
-	cmdY2 := cmdY1 + 1
-	g.drawCmdLine2(screen, x, cmdY2, width, styleCmdBar, styleInput)
+	// ── Linha 23: Barra secundaria (modo / ajuda / comandos) ──
+	g.drawCmdBar2(screen, x, y+SC2_HEADER_ROWS+SC2_DATA_ROWS+1, width, sCmd, sInput)
 }
 
-// drawStatusLine renderiza a linha de status (linha 0)
-// Formato: "B5: 2500     Fórmula ou valor"
-func (g *GridView) drawStatusLine(screen tcell.Screen, x, y, width int, style, formulaStyle tcell.Style) {
-	cursor := g.sheet.Cursor
-	cell := g.sheet.GetCell(cursor)
+// drawStatusLine - Linha 0
+// Formato SC2: " A1: (V)  1500        " + espacos + "Mem:62459"
+// Tipos: (V)=valor  (L)=label/texto  (F)=formula  ( )=vazio
+func (g *GridView) drawStatusLine(screen tcell.Screen, x, y, width int, st, formulaSt tcell.Style) {
+	cur := g.sheet.Cursor
+	cell := g.sheet.GetCell(cur)
 
-	// Parte esquerda: coordenada e tipo
-	left := fmt.Sprintf(" %-4s", cursor.String())
-
-	// Conteúdo da célula na linha de status
+	// Tipo da celula: V=valor numerico, L=label/texto, F=formula, espaco=vazio
+	typeChar := " "
 	var content string
 	switch cell.Type {
 	case spreadsheet.CellEmpty:
+		typeChar = " "
 		content = ""
 	case spreadsheet.CellText:
+		typeChar = "L"
 		content = `"` + cell.TextValue
 	case spreadsheet.CellNumber:
-		content = fmt.Sprintf("%v", cell.NumericValue)
+		typeChar = "V"
+		content = fmtFloat(cell.NumericValue)
 	case spreadsheet.CellFormula:
-		content = cell.Formula
+		typeChar = "F"
+		content = cell.Formula // Mostra a formula, nao o resultado
+		st = formulaSt
 	}
 
-	// Memória disponível (simulada) e modo
-	modeStr := ""
-	switch g.mode {
-	case ModeInput:
-		modeStr = " [INPUT] "
-	case ModeCommand:
-		modeStr = " [COMMAND] "
+	// Parte esquerda: direcao do cursor + coordenada + tipo
+	// SC2 mostra '>' '<' '^' 'v' para indicar direcao do Enter
+	// Simplificamos: sempre mostra '>' (para baixo, mais comum)
+	left := fmt.Sprintf(">%-5s(%s) ", cur.String(), typeChar)
+
+	// Memoria disponivel (simulada - SC2 mostrava isso)
+	mem := "Mem:62459"
+
+	// Monta linha completa
+	available := width - len(left) - len(mem) - 1
+	if available < 0 {
+		available = 0
 	}
-
-	// Monta linha de status
-	memStr := "Mem: 62459"
-	statusLine := left + " " + content
-	statusW := runewidth.StringWidth(statusLine)
-	modeW   := runewidth.StringWidth(modeStr)
-	memW    := runewidth.StringWidth(memStr)
-	rightPad := width - statusW - modeW - memW - 1
-	if rightPad < 0 { rightPad = 0 }
-	full := statusLine + strings.Repeat(" ", rightPad) + modeStr + " " + memStr
-
-	// Trunca pela largura visual, nao pelo numero de runes
-	full = runewidthTrunc(full, width)
-	// Completa com espacos se necessario
-	for runewidth.StringWidth(full) < width {
-		full += " "
+	if runewidth.StringWidth(content) > available {
+		content = runewidthTrunc(content, available)
 	}
+	mid := runewidthPad(content, available)
+	line := left + mid + " " + mem
 
+	// Desenha
 	col := x
-	for j, ch := range full {
-		s := style
-		if j >= len([]rune(left))+1 {
-			s = formulaStyle
+	for i, ch := range line {
+		s := st
+		// Coord e tipo em estilo normal (nao formula)
+		if i < len(left) {
+			s = tcell.StyleDefault.Background(tcell.ColorNavy).Foreground(tcell.ColorWhite).Bold(true)
 		}
 		screen.SetContent(col, y, ch, nil, s)
 		col += runewidth.RuneWidth(ch)
@@ -278,96 +182,164 @@ func (g *GridView) drawStatusLine(screen tcell.Screen, x, y, width int, style, f
 			break
 		}
 	}
+	// Preenche resto
+	for col < x+width {
+		screen.SetContent(col, y, ' ', nil, st)
+		col++
+	}
 }
 
-// drawColumnHeader renderiza o cabeçalho de colunas (linha 1)
-// Formato: "   |  A  |  B  |  C  |..."
-func (g *GridView) drawColumnHeader(screen tcell.Screen, x, y, width int, colStyle, numStyle, sepStyle tcell.Style) {
-	// Espaço para números de linha
-	header := fmt.Sprintf("%3s", " ")
-	gridDrawAt(screen, x, y, header, numStyle)
-
-	// Separador "|" após row nums
-	screen.SetContent(x+SC2_ROW_NUM_W, y, '|', nil, sepStyle)
+// drawColHeader - Linha 1
+// Formato SC2: "   |    A    |    B    |    C    |..."
+func (g *GridView) drawColHeader(screen tcell.Screen, x, y, width int, st, hlSt, sepSt tcell.Style) {
+	// Espaco do numero de linha
+	for i := 0; i < SC2_ROW_NUM_W; i++ {
+		screen.SetContent(x+i, y, ' ', nil, st)
+	}
+	screen.SetContent(x+SC2_ROW_NUM_W, y, '|', nil, sepSt)
 
 	curX := x + SC2_ROW_NUM_W + SC2_SEP_W
-	visibleCols := g.calcVisibleCols(width)
-
-	for ci, col := range visibleCols {
+	for ci, col := range g.calcVisCols(width) {
 		colW := g.sheet.GetColWidth(col)
-		colName := spreadsheet.ColName(col)
+		name := spreadsheet.ColName(col)
 
-		// Centraliza o nome da coluna dentro da largura (colName e ASCII puro)
-		padTotal := colW - len(colName)
-		padLeft := padTotal / 2
-		padRight := padTotal - padLeft
-		if padLeft < 0 { padLeft = 0 }
-		if padRight < 0 { padRight = 0 }
-
-		colHeader := strings.Repeat(" ", padLeft) + colName + strings.Repeat(" ", padRight)
-
-		// Destaca a coluna do cursor
-		st := colStyle
-		if col == g.sheet.Cursor.Col {
-			st = tcell.StyleDefault.
-				Background(tcell.ColorWhite).
-				Foreground(tcell.ColorBlack).
-				Bold(true)
+		pad := colW - len(name)
+		pLeft := pad / 2
+		pRight := pad - pLeft
+		if pLeft < 0 {
+			pLeft = 0
+		}
+		if pRight < 0 {
+			pRight = 0
 		}
 
-		gridDrawAt(screen, curX, y, colHeader, st)
+		hdr := strings.Repeat(" ", pLeft) + name + strings.Repeat(" ", pRight)
+
+		// Destaca coluna do cursor
+		s := st
+		if col == g.sheet.Cursor.Col {
+			s = hlSt
+		}
+
+		gridDrawAt(screen, curX, y, hdr, s)
 		curX += colW
 
-		// Separador
-		if ci < len(visibleCols)-1 && curX < x+width-1 {
-			screen.SetContent(curX, y, '|', nil, sepStyle)
+		if ci < len(g.calcVisCols(width))-1 && curX < x+width-1 {
+			screen.SetContent(curX, y, '|', nil, sepSt)
 			curX++
 		}
-
 		if curX >= x+width {
 			break
 		}
 	}
-
-	// Preenche o resto
-	for cx := curX; cx < x+width; cx++ {
-		screen.SetContent(cx, y, ' ', nil, colStyle)
+	for curX < x+width {
+		screen.SetContent(curX, y, ' ', nil, st)
+		curX++
 	}
 }
 
-// drawCmdLine1 renderiza a primeira linha da barra de comandos
-func (g *GridView) drawCmdLine1(screen tcell.Screen, x, y, width int, barStyle, inputStyle, statusStyle tcell.Style) {
+// drawDataRow - Uma linha de dados
+func (g *GridView) drawDataRow(screen tcell.Screen, x, y, width, sheetRow int,
+	visCols []int, sNorm, sRowNum, sSep, sCursor tcell.Style) {
+
+	// Numero da linha (3 digitos, alinhado a direita)
+	rowStr := fmt.Sprintf("%3d", sheetRow)
+	// Destaca linha do cursor
+	rsty := sRowNum
+	if sheetRow == g.sheet.Cursor.Row {
+		rsty = sCursor
+	}
+	gridDrawAt(screen, x, y, rowStr, rsty)
+	screen.SetContent(x+SC2_ROW_NUM_W, y, '|', nil, sSep)
+
+	cellX := x + SC2_ROW_NUM_W + SC2_SEP_W
+	for ci, col := range visCols {
+		colW := g.sheet.GetColWidth(col)
+		coord := spreadsheet.Coord{Row: sheetRow, Col: col}
+		cell := g.sheet.GetCell(coord)
+		isCursor := (coord == g.sheet.Cursor)
+
+		// Se e a celula sendo editada, mostra o buffer
+		var display string
+		if isCursor && g.mode == ModeInput {
+			buf := g.inputBuffer + "_"
+			display = runewidthPad(runewidthTrunc(buf, colW), colW)
+		} else {
+			display = g.sheet.FormatCellValue(cell, colW)
+		}
+
+		s := sNorm
+		if isCursor {
+			s = sCursor
+		}
+
+		gridDrawAt(screen, cellX, y, display, s)
+		cellX += colW
+
+		// Separador entre colunas
+		if ci < len(visCols)-1 && cellX < x+width-1 {
+			screen.SetContent(cellX, y, '|', nil, sSep)
+			cellX++
+		}
+		if cellX >= x+width {
+			break
+		}
+	}
+	// Preenche resto da linha
+	for cellX < x+width {
+		screen.SetContent(cellX, y, ' ', nil, sNorm)
+		cellX++
+	}
+}
+
+// drawCmdBar1 - Linha 22: entrada de dados / comando / status
+// No SC2 original esta linha mostra:
+//
+//	Modo normal: mensagem de status OU vazia
+//	Modo input:  o que o usuario esta digitando
+//	Modo /cmd:   "A1 COMMAND: " + opcoes do menu
+func (g *GridView) drawCmdBar1(screen tcell.Screen, x, y, width int, st, inputSt, errorSt tcell.Style) {
 	var line string
 
 	switch g.mode {
 	case ModeNormal:
 		if g.statusMsg != "" {
 			line = " " + g.statusMsg
-			line = runewidthPad(runewidthTrunc(line, width), width)
-			gridDrawAt(screen, x, y, line, statusStyle)
-			return
+		} else {
+			// SC2 mostrava o valor calculado da formula aqui quando em modo normal
+			line = ""
 		}
-		line = " Setas:Mover  Enter:Confirmar  /:Comandos  ?:Ajuda  Esc:Cancela"
 
 	case ModeInput:
-		line = " Entrada: " + g.inputBuffer + "_"
+		// SC2: mostra "Enter value/label:" + o que foi digitado
+		prefix := " Enter: "
+		line = prefix + g.inputBuffer
 
 	case ModeCommand:
-		line = " Comando: /" + g.inputBuffer
+		// SC2: ">" indica modo de comando
+		line = " > /" + g.inputBuffer
+
+	case ModeGoto:
+		line = " Goto celula: " + g.inputBuffer
+	}
+
+	var s tcell.Style
+	if g.statusMsg != "" && strings.HasPrefix(g.statusMsg, "ERRO") {
+		s = errorSt
+	} else if g.mode != ModeNormal {
+		s = inputSt
+	} else {
+		s = st
 	}
 
 	line = runewidthPad(runewidthTrunc(line, width), width)
-
-	st := barStyle
-	if g.mode != ModeNormal {
-		st = inputStyle
-	}
-
-	gridDrawAt(screen, x, y, line, st)
+	gridDrawAt(screen, x, y, line, s)
 }
 
-// drawCmdLine2 renderiza a segunda linha da barra de comandos
-func (g *GridView) drawCmdLine2(screen tcell.Screen, x, y, width int, barStyle, inputStyle tcell.Style) {
+// drawCmdBar2 - Linha 23: ajuda contextual / lista de comandos
+// No SC2 original esta linha mostra os comandos do menu quando "/" e pressionado
+// ou informacao da celula atual no modo normal
+func (g *GridView) drawCmdBar2(screen tcell.Screen, x, y, width int, st, inputSt tcell.Style) {
 	var line string
 
 	switch g.mode {
@@ -376,51 +348,59 @@ func (g *GridView) drawCmdLine2(screen tcell.Screen, x, y, width int, barStyle, 
 		cell := g.sheet.GetCell(cur)
 		switch cell.Type {
 		case spreadsheet.CellEmpty:
-			line = fmt.Sprintf(" Celula %s vazia - Digite para inserir", cur.String())
+			line = fmt.Sprintf(" %s: vazia  [/:Comandos] [?:Ajuda] [Setas:Mover] [Del:Apagar]", cur)
 		case spreadsheet.CellText:
-			line = fmt.Sprintf(" Texto: \"%s\"", cell.TextValue)
+			line = fmt.Sprintf(" %s: (L) \"%s\"", cur, cell.TextValue)
 		case spreadsheet.CellNumber:
-			line = fmt.Sprintf(" Numero: %v", cell.NumericValue)
+			line = fmt.Sprintf(" %s: (V) %s", cur, fmtFloat(cell.NumericValue))
 		case spreadsheet.CellFormula:
-			line = fmt.Sprintf(" Formula: %s = %v", cell.Formula, cell.NumericValue)
+			if cell.TextValue != "" && strings.HasPrefix(cell.TextValue, "#") {
+				line = fmt.Sprintf(" %s: (F) %s = %s", cur, cell.Formula, cell.TextValue)
+			} else {
+				line = fmt.Sprintf(" %s: (F) %s = %s", cur, cell.Formula, fmtFloat(cell.NumericValue))
+			}
 		}
 
 	case ModeInput:
-		line = " [Enter]:Confirmar  [Esc]:Cancelar"
+		// SC2: mostra dica do tipo de entrada
+		line = " [Enter]:Confirma  [Esc]:Cancela  [Setas]:Confirma e move  [\"]texto  [+@(]:formula"
 
 	case ModeCommand:
-		line = " /B:Blank /C:Copy /D:Delete /F:Format /G:Global /I:Insert /L:Load /M:Move /P:Print /Q:Quit /R:Replicate /S:Save /T:Title /W:Width /X:Xfer /Z:Zap"
+		// SC2: lista de comandos do menu principal
+		line = " B:Blank C:Copy D:Delete F:Format G:Global I:Insert L:Load M:Move P:Print Q:Quit R:Rep S:Save T:Title W:Width X:Xfer Z:Zap"
+
+	case ModeGoto:
+		line = " [Enter]:Vai  [Esc]:Cancela  Ex: A1  B12  AA3"
+	}
+
+	s := st
+	if g.mode == ModeCommand || g.mode == ModeInput {
+		s = inputSt
 	}
 
 	line = runewidthPad(runewidthTrunc(line, width), width)
-
-	st := barStyle
-	if g.mode == ModeCommand {
-		st = inputStyle
-	}
-
-	gridDrawAt(screen, x, y, line, st)
+	gridDrawAt(screen, x, y, line, s)
 }
 
-// calcVisibleCols calcula quais colunas são visíveis dado a largura disponível
-func (g *GridView) calcVisibleCols(width int) []int {
+// ─── Calculo de colunas visiveis ─────────────────────────────────────────────
+
+func (g *GridView) calcVisCols(width int) []int {
 	available := width - SC2_ROW_NUM_W - SC2_SEP_W
 	var cols []int
 	used := 0
-
 	for col := g.sheet.ViewCol; col <= 63; col++ {
 		colW := g.sheet.GetColWidth(col)
-		if used+colW+1 > available {
+		if used+colW > available {
 			break
 		}
 		cols = append(cols, col)
-		used += colW + 1 // +1 para o separador "|"
+		used += colW + 1 // +1 para o separador
 	}
-
 	return cols
 }
 
-// handleInput processa as teclas de entrada
+// ─── Processamento de entrada ─────────────────────────────────────────────────
+
 func (g *GridView) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	switch g.mode {
 	case ModeNormal:
@@ -428,115 +408,120 @@ func (g *GridView) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	case ModeInput:
 		return g.handleInputMode(event)
 	case ModeCommand:
-		return g.handleCommandMode(event)
+		return g.handleCommand(event)
+	case ModeGoto:
+		return g.handleGoto(event)
 	}
 	return event
 }
 
-// handleNormal processa teclas no modo normal (navegação)
 func (g *GridView) handleNormal(event *tcell.EventKey) *tcell.EventKey {
-	sheet := g.sheet
-	_, _, width, height := g.GetInnerRect()
+	// Limpa status ao navegar
+	g.statusMsg = ""
+
+	_, _, width, _ := g.GetInnerRect()
 	visRows := SC2_DATA_ROWS
-	visCols := len(g.calcVisibleCols(width))
-	_ = height
+	visCols := len(g.calcVisCols(width))
 
 	switch event.Key() {
 	case tcell.KeyUp:
-		sheet.MoveCursor(-1, 0)
+		g.sheet.MoveCursor(-1, 0)
 	case tcell.KeyDown:
-		sheet.MoveCursor(1, 0)
+		g.sheet.MoveCursor(1, 0)
 	case tcell.KeyLeft:
-		sheet.MoveCursor(0, -1)
+		g.sheet.MoveCursor(0, -1)
 	case tcell.KeyRight:
-		sheet.MoveCursor(0, 1)
+		g.sheet.MoveCursor(0, 1)
 	case tcell.KeyTab:
-		sheet.MoveCursor(0, 1)
+		// Tab: move para direita (SC2 original)
+		g.sheet.MoveCursor(0, 1)
 	case tcell.KeyBacktab:
-		sheet.MoveCursor(0, -1)
-
-	// PgDn / PgUp
-	case tcell.KeyPgDn:
-		sheet.MoveCursor(visRows, 0)
-	case tcell.KeyPgUp:
-		sheet.MoveCursor(-visRows, 0)
-
-	// Home: vai para coluna A da linha atual
-	case tcell.KeyHome:
-		sheet.Cursor.Col = 1
-
-	// End: vai para última coluna com dado
-	case tcell.KeyEnd:
-		// Por hora, vai para coluna 63
-		sheet.Cursor.Col = 63
-
-	// Ctrl+Right/Left: pula uma "página" de colunas
-	// tcell não tem KeyCtrlRight/Left — usa Ctrl+F (forward) e Ctrl+B (back)
-	case tcell.KeyCtrlF:
-		sheet.MoveCursor(0, visCols)
-	case tcell.KeyCtrlB:
-		sheet.MoveCursor(0, -visCols)
-
-	// Enter: confirma (desce uma linha, como no SC2)
+		g.sheet.MoveCursor(0, -1)
 	case tcell.KeyEnter:
-		sheet.MoveCursor(1, 0)
-
-	// Rune keys
+		// Enter no SC2: desce uma linha (confirma posicao)
+		g.sheet.MoveCursor(1, 0)
+	case tcell.KeyPgDn:
+		g.sheet.MoveCursor(visRows, 0)
+	case tcell.KeyPgUp:
+		g.sheet.MoveCursor(-visRows, 0)
+	case tcell.KeyHome:
+		// Home: vai para coluna A da linha atual (SC2 original)
+		g.sheet.Cursor.Col = 1
+	case tcell.KeyEnd:
+		// End: vai para ultima coluna usada (por hora col 63)
+		g.sheet.Cursor.Col = 63
+	case tcell.KeyCtrlF:
+		// Ctrl+F: page right (colunas)
+		g.sheet.MoveCursor(0, visCols)
+	case tcell.KeyCtrlB:
+		// Ctrl+B: page left (colunas)
+		g.sheet.MoveCursor(0, -visCols)
+	case tcell.KeyCtrlG:
+		// Ctrl+G: Goto celula
+		g.mode = ModeGoto
+		g.inputBuffer = ""
+	case tcell.KeyDelete, tcell.KeyBackspace, tcell.KeyBackspace2:
+		// Del: apaga conteudo da celula (SC2: /Blank ou Del)
+		g.sheet.SetCell(g.sheet.Cursor, nil)
+		g.sheet.Recalc()
+		g.statusMsg = fmt.Sprintf("Celula %s apagada", g.sheet.Cursor)
+	case tcell.KeyF5:
+		// F5: Goto (alternativa)
+		g.mode = ModeGoto
+		g.inputBuffer = ""
 	case tcell.KeyRune:
 		switch event.Rune() {
 		case '/':
-			// Abre barra de comandos
 			g.mode = ModeCommand
 			g.inputBuffer = ""
-
 		case '?':
-			// Ajuda (por ora mostra mensagem)
-			g.statusMsg = "AJUDA: / = Comandos | Setas = Navegar | Esc = Cancela | Enter = Confirma"
-
-		case 127, 8: // DEL / Backspace - apaga célula atual
-			sheet.SetCell(sheet.Cursor, nil)
-
+			g.statusMsg = "SC2MSX v2 | /=Comandos Del=Apaga Tab=Direita =GoTo PgUp/Dn=Pagina !Recalc"
+		case '=':
+			// '=' ativa GoTo (comportamento exato do SC2 original)
+			g.mode = ModeGoto
+			g.inputBuffer = ""
+		case '!':
+			// '!' forca recalculo manual (SC2 original)
+			g.sheet.Recalc()
+			g.statusMsg = "Recalculo concluido"
 		default:
-			// Começa a digitar na célula atual
+			// Qualquer tecla alfanumerica inicia edicao (comportamento SC2)
 			g.mode = ModeInput
 			g.inputBuffer = string(event.Rune())
 		}
-
-	case tcell.KeyDelete, tcell.KeyBackspace, tcell.KeyBackspace2:
-		sheet.SetCell(sheet.Cursor, nil)
-		g.statusMsg = "Célula apagada"
 	}
 
-	// Ajusta a view para manter cursor visível
-	sheet.AdjustView(visRows, visCols)
-
+	g.sheet.AdjustView(visRows, visCols)
 	return nil
 }
 
-// handleInputMode processa teclas no modo de entrada de dados
 func (g *GridView) handleInputMode(event *tcell.EventKey) *tcell.EventKey {
+	_, _, width, _ := g.GetInnerRect()
+	visRows := SC2_DATA_ROWS
+	visCols := len(g.calcVisCols(width))
+
 	switch event.Key() {
 	case tcell.KeyEscape:
-		// Cancela entrada
+		// ESC: cancela sem gravar (SC2 original)
 		g.mode = ModeNormal
 		g.inputBuffer = ""
 
 	case tcell.KeyEnter:
-		// Confirma entrada
+		// Enter: confirma e move para baixo (SC2 original)
 		g.commitInput()
 		g.mode = ModeNormal
 		g.sheet.MoveCursor(1, 0)
-		_, _, width, _ := g.GetInnerRect()
-		g.sheet.AdjustView(SC2_DATA_ROWS, len(g.calcVisibleCols(width)))
 
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(g.inputBuffer) > 0 {
-			runes := []rune(g.inputBuffer)
-			g.inputBuffer = string(runes[:len(runes)-1])
-		}
+	case tcell.KeyTab:
+		// Tab: confirma e move para direita
+		g.commitInput()
+		g.mode = ModeNormal
+		g.sheet.MoveCursor(0, 1)
 
-	case tcell.KeyRune:
-		g.inputBuffer += string(event.Rune())
+	case tcell.KeyBacktab:
+		g.commitInput()
+		g.mode = ModeNormal
+		g.sheet.MoveCursor(0, -1)
 
 	// Setas confirmam e movem (comportamento SC2)
 	case tcell.KeyUp:
@@ -548,98 +533,167 @@ func (g *GridView) handleInputMode(event *tcell.EventKey) *tcell.EventKey {
 		g.mode = ModeNormal
 		g.sheet.MoveCursor(1, 0)
 	case tcell.KeyLeft:
-		g.commitInput()
-		g.mode = ModeNormal
-		g.sheet.MoveCursor(0, -1)
+		// Left no SC2 durante edicao: apaga ultimo char (nao move)
+		if len(g.inputBuffer) > 0 {
+			runes := []rune(g.inputBuffer)
+			g.inputBuffer = string(runes[:len(runes)-1])
+		}
 	case tcell.KeyRight:
+		// Right: confirma e move para direita
 		g.commitInput()
 		g.mode = ModeNormal
 		g.sheet.MoveCursor(0, 1)
+
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(g.inputBuffer) > 0 {
+			runes := []rune(g.inputBuffer)
+			g.inputBuffer = string(runes[:len(runes)-1])
+		}
+
+	case tcell.KeyRune:
+		g.inputBuffer += string(event.Rune())
 	}
 
+	g.sheet.AdjustView(visRows, visCols)
 	return nil
 }
 
-// commitInput confirma o que foi digitado e armazena na celula
-// Apos gravar, faz recalculo completo da planilha
-func (g *GridView) commitInput() {
-	if g.inputBuffer == "" {
-		return
-	}
-
-	input := g.inputBuffer
-	cell := parseInput(input)
-	coord := g.sheet.Cursor
-	g.sheet.SetCell(coord, cell)
-
-	// Recalcula todas as formulas
-	g.sheet.Recalc()
-}
-
-// handleCommandMode processa o menu de comandos (após "/")
-func (g *GridView) handleCommandMode(event *tcell.EventKey) *tcell.EventKey {
+func (g *GridView) handleCommand(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyEscape:
 		g.mode = ModeNormal
 		g.inputBuffer = ""
-
+		return nil
 	case tcell.KeyRune:
 		cmd := event.Rune()
-
+		g.mode = ModeNormal
+		g.inputBuffer = ""
 		switch cmd {
-		case '?':
-			g.mode = ModeNormal
-			g.inputBuffer = ""
-			g.statusMsg = "COMANDOS SC2: B=Blank C=Copy D=Delete F=Format G=Global I=Insert L=Load M=Move P=Print Q=Quit R=Replicate S=Save T=Title W=Width X=Xfer Z=Zap"
-
+		case 'B', 'b':
+			// Blank: apaga celula atual (mesmo que Del)
+			g.sheet.SetCell(g.sheet.Cursor, nil)
+			g.sheet.Recalc()
+			g.statusMsg = fmt.Sprintf("Celula %s apagada", g.sheet.Cursor)
 		case 'Q', 'q':
-			// Quit - será tratado pelo app principal
-			g.mode = ModeNormal
-			g.inputBuffer = ""
 			if g.onCommand != nil {
 				g.onCommand("QUIT")
 			}
-
 		case 'S', 's':
-			// Save
-			g.mode = ModeNormal
-			g.inputBuffer = ""
 			if g.onCommand != nil {
 				g.onCommand("SAVE")
 			}
-
 		case 'L', 'l':
-			// Load
-			g.mode = ModeNormal
-			g.inputBuffer = ""
 			if g.onCommand != nil {
 				g.onCommand("LOAD")
 			}
-
 		case 'Z', 'z':
-			// Zap (limpa planilha)
-			g.mode = ModeNormal
-			g.inputBuffer = ""
 			if g.onCommand != nil {
 				g.onCommand("ZAP")
 			}
-
+		case 'W', 'w':
+			if g.onCommand != nil {
+				g.onCommand("WIDTH")
+			}
+		case 'F', 'f':
+			if g.onCommand != nil {
+				g.onCommand("FORMAT")
+			}
+		case 'G', 'g':
+			if g.onCommand != nil {
+				g.onCommand("GLOBAL")
+			}
+		case 'I', 'i':
+			if g.onCommand != nil {
+				g.onCommand("INSERT")
+			}
+		case 'D', 'd':
+			if g.onCommand != nil {
+				g.onCommand("DELETE")
+			}
+		case 'C', 'c':
+			if g.onCommand != nil {
+				g.onCommand("COPY")
+			}
+		case 'M', 'm':
+			if g.onCommand != nil {
+				g.onCommand("MOVE")
+			}
+		case 'R', 'r':
+			if g.onCommand != nil {
+				g.onCommand("REPLICATE")
+			}
+		case 'T', 't':
+			if g.onCommand != nil {
+				g.onCommand("TITLE")
+			}
+		case 'P', 'p':
+			if g.onCommand != nil {
+				g.onCommand("PRINT")
+			}
+		case 'X', 'x':
+			if g.onCommand != nil {
+				g.onCommand("XFER")
+			}
+		case '?':
+			g.statusMsg = "Comandos: B=Apaga C=Copia D=Del F=Formato G=Global I=Insere L=Carrega M=Move P=Imprime Q=Sai R=Replica S=Salva T=Titulo W=Largura X=Transf Z=Zera"
 		default:
-			// Comando ainda não implementado
-			g.mode = ModeNormal
-			g.inputBuffer = ""
-			g.statusMsg = fmt.Sprintf("Comando '/%c' ainda não implementado", cmd)
+			g.statusMsg = fmt.Sprintf("Comando '/%c' nao reconhecido", cmd)
 		}
 	}
-
 	return nil
 }
 
-// parseInput interpreta a entrada do usuário e cria uma Cell
-// Regras SC2:
-//   - Começa com " ou letra → texto (label)
-//   - Começa com número, +, -, (, @ → número ou fórmula
-//   - Começa com + ou número puro → número
+func (g *GridView) handleGoto(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyEscape:
+		g.mode = ModeNormal
+		g.inputBuffer = ""
+	case tcell.KeyEnter:
+		coord, err := spreadsheet.ParseCoord(strings.ToUpper(strings.TrimSpace(g.inputBuffer)))
+		if err != nil {
+			g.statusMsg = fmt.Sprintf("Coordenada invalida: %s", g.inputBuffer)
+		} else {
+			g.sheet.Cursor = coord
+			_, _, width, _ := g.GetInnerRect()
+			g.sheet.AdjustView(SC2_DATA_ROWS, len(g.calcVisCols(width)))
+		}
+		g.mode = ModeNormal
+		g.inputBuffer = ""
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(g.inputBuffer) > 0 {
+			runes := []rune(g.inputBuffer)
+			g.inputBuffer = string(runes[:len(runes)-1])
+		}
+	case tcell.KeyRune:
+		g.inputBuffer += strings.ToUpper(string(event.Rune()))
+	}
+	return nil
+}
+
+// ─── Confirmacao de entrada ───────────────────────────────────────────────────
+
+// commitInput grava o conteudo do buffer na celula atual e recalcula
+func (g *GridView) commitInput() {
+	if g.inputBuffer == "" {
+		return
+	}
+	cell := parseInput(g.inputBuffer)
+	g.sheet.SetCell(g.sheet.Cursor, cell)
+	g.sheet.Recalc()
+	g.inputBuffer = ""
+}
+
+// parseInput interpreta entrada do usuario - regras exatas do SC2 MSX:
+//
+//	SC2 determina o tipo pelo PRIMEIRO CARACTER:
+//	" (aspas)        → texto (label) - remove a aspas
+//	Letra A-Z        → texto (label) - sem aspas necessarias
+//	Digito 0-9       → numero (tenta parsear como float)
+//	+ - ( @          → formula
+//	Qualquer outro   → texto
+//
+//	Numero com ponto: float. Sem ponto: inteiro.
+//	Formula: avaliada pelo Evaluator apos SetCell+Recalc
 func parseInput(input string) *spreadsheet.Cell {
 	if input == "" {
 		return &spreadsheet.Cell{Type: spreadsheet.CellEmpty}
@@ -647,63 +701,83 @@ func parseInput(input string) *spreadsheet.Cell {
 
 	first := rune(input[0])
 
-	// Forçar texto com aspas (como no SC2: "texto)
+	// Aspas: texto forcado (SC2: "texto - a aspas e o indicador, nao faz parte do valor)
 	if first == '"' {
+		text := ""
+		if len(input) > 1 {
+			text = input[1:]
+		}
 		return &spreadsheet.Cell{
-			Type:      spreadsheet.CellText,
-			TextValue: input[1:], // Remove a aspa inicial
-			RawInput:  input,
+			Type: spreadsheet.CellText, TextValue: text, RawInput: input,
 		}
 	}
 
-	// Letra sem aspas → também é texto (label)
-	if first >= 'A' && first <= 'Z' || first >= 'a' && first <= 'z' {
+	// Apostrofo: texto repetitivo (SC2: '---  preenche a celula com o padrao)
+	if first == '\'' {
 		return &spreadsheet.Cell{
-			Type:      spreadsheet.CellText,
-			TextValue: input,
-			RawInput:  input,
+			Type: spreadsheet.CellText, TextValue: input, RawInput: input,
 		}
 	}
 
-	// Tenta número puro
-	if f, err := parseFloat(input); err == nil {
+	// Letra: texto (label) - SC2 nao precisa de aspas para textos que comecam com letra
+	if (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') {
 		return &spreadsheet.Cell{
-			Type:         spreadsheet.CellNumber,
-			NumericValue: f,
-			RawInput:     input,
+			Type: spreadsheet.CellText, TextValue: input, RawInput: input,
 		}
 	}
 
-	// Começa com +, -, (, @ → formula SC2
-	// O valor sera calculado pelo Recalc() apos SetCell
+	// Numero puro OU expressao que comeca com digito (ex: 4+5, 3*2, 1.5/2)
+	// SC2: se começa com digito e nao e numero puro, trata como formula
+	if first >= '0' && first <= '9' || first == '.' {
+		if isExactFloat(input) {
+			// Numero puro: sem operadores, e um float valido completo
+			f, _ := parseFloat(input)
+			return &spreadsheet.Cell{
+				Type: spreadsheet.CellNumber, NumericValue: f, RawInput: input,
+			}
+		}
+		// Contem operadores (+, -, *, /, ^, =, <, >) apos o numero: e formula
+		// O SC2 trata "4+5" igual a "+4+5" - expressao numerica
+		return &spreadsheet.Cell{
+			Type: spreadsheet.CellFormula, Formula: input, RawInput: input,
+		}
+	}
+
+	// Formula: +  -  (  @
 	if first == '+' || first == '-' || first == '(' || first == '@' {
 		return &spreadsheet.Cell{
-			Type:         spreadsheet.CellFormula,
-			Formula:      input,
-			NumericValue: 0,
-			RawInput:     input,
+			Type: spreadsheet.CellFormula, Formula: input, RawInput: input,
 		}
 	}
 
 	// Default: texto
 	return &spreadsheet.Cell{
-		Type:      spreadsheet.CellText,
-		TextValue: input,
-		RawInput:  input,
+		Type: spreadsheet.CellText, TextValue: input, RawInput: input,
 	}
 }
 
-// parseFloat tenta converter string para float64
+// isExactFloat retorna true somente se a string inteira e um numero valido,
+// sem nenhum caractere extra apos o valor numerico.
+// Diferente de parseFloat (que usa Sscanf e para no primeiro char invalido),
+// esta funcao exige que TODO o input seja consumido.
+func isExactFloat(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Tenta strconv.ParseFloat - ele exige o numero completo
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
+}
+
 func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)
 	return f, err
 }
 
-// ─── Helpers de renderização com runewidth ───────────────────────────────────
+// ─── Helpers de renderizacao ──────────────────────────────────────────────────
 
-// gridDrawAt desenha texto na tela avancando X pela largura visual de cada rune.
-// Isso evita desalinhamento com caracteres acentuados ou de largura dupla.
+// gridDrawAt desenha texto avancando X pela largura visual real de cada rune
 func gridDrawAt(screen tcell.Screen, x, y int, text string, style tcell.Style) {
 	col := x
 	for _, ch := range text {
@@ -712,7 +786,7 @@ func gridDrawAt(screen tcell.Screen, x, y int, text string, style tcell.Style) {
 	}
 }
 
-// runewidthTrunc trunca a string para que sua largura visual nao exceda maxW.
+// runewidthTrunc trunca string para que largura visual nao exceda maxW
 func runewidthTrunc(s string, maxW int) string {
 	w := 0
 	for i, ch := range s {
@@ -725,11 +799,23 @@ func runewidthTrunc(s string, maxW int) string {
 	return s
 }
 
-// runewidthPad completa a string com espacos ate atingir a largura visual targetW.
+// runewidthPad completa string com espacos ate largura visual targetW
 func runewidthPad(s string, targetW int) string {
 	w := runewidth.StringWidth(s)
 	if w >= targetW {
 		return s
 	}
 	return s + strings.Repeat(" ", targetW-w)
+}
+
+// fmtFloat formata float para exibicao compacta (como SC2 original)
+// Numeros inteiros sem casas decimais, floats com precisao necessaria
+func fmtFloat(v float64) string {
+	// Se e inteiro exato, exibe sem ponto
+	if v == float64(int64(v)) && v >= -1e12 && v <= 1e12 {
+		return fmt.Sprintf("%d", int64(v))
+	}
+	// Senao: 6 digitos significativos (padrao SC2)
+	s := fmt.Sprintf("%.6g", v)
+	return s
 }
