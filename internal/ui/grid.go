@@ -49,7 +49,8 @@ type InputMode int
 
 const (
 	ModeNormal  InputMode = iota // Navegacao
-	ModeInput                    // Digitando conteudo
+	ModeInput                    // Digitando conteudo novo
+	ModeEdit                     // Editando conteudo existente (/E ou F2)
 	ModeCommand                  // Menu "/" aberto
 	ModeGoto                     // Goto celula (Ctrl+G ou F5)
 )
@@ -58,11 +59,13 @@ const (
 type GridView struct {
 	*tview.Box
 
-	sheet       *spreadsheet.Spreadsheet
-	mode        InputMode
-	inputBuffer string // Buffer do que o usuario esta digitando
-	statusMsg   string // Mensagem temporaria de status
-	onCommand   func(string)
+	sheet         *spreadsheet.Spreadsheet
+	mode          InputMode
+	inputBuffer   string // Buffer do que o usuario esta digitando
+	editCursorPos int    // Posicao do cursor de edicao dentro do buffer
+	statusMsg     string // Mensagem temporaria de status
+	onCommand     func(string)
+	onHelp        func(HelpContext) // Callback para abrir o help contextual
 }
 
 // NewGridView cria a view principal
@@ -77,8 +80,26 @@ func NewGridView(sheet *spreadsheet.Spreadsheet) *GridView {
 	return g
 }
 
-func (g *GridView) SetCommandHandler(fn func(string)) { g.onCommand = fn }
-func (g *GridView) SetStatus(msg string)              { g.statusMsg = msg }
+func (g *GridView) SetCommandHandler(fn func(string))   { g.onCommand = fn }
+func (g *GridView) SetHelpHandler(fn func(HelpContext)) { g.onHelp = fn }
+func (g *GridView) SetStatus(msg string)                { g.statusMsg = msg }
+
+// openHelp abre o help para o contexto atual
+func (g *GridView) openHelp() {
+	if g.onHelp == nil {
+		return
+	}
+	switch g.mode {
+	case ModeInput:
+		g.onHelp(HelpInput)
+	case ModeCommand:
+		g.onHelp(HelpCommand)
+	case ModeGoto:
+		g.onHelp(HelpGoto)
+	default:
+		g.onHelp(HelpNormal)
+	}
+}
 
 // ─── Renderizacao ─────────────────────────────────────────────────────────────
 
@@ -259,10 +280,19 @@ func (g *GridView) drawDataRow(screen tcell.Screen, x, y, width, sheetRow int,
 		cell := g.sheet.GetCell(coord)
 		isCursor := (coord == g.sheet.Cursor)
 
-		// Se e a celula sendo editada, mostra o buffer
+		// Se e a celula sendo editada, mostra o buffer com cursor
 		var display string
-		if isCursor && g.mode == ModeInput {
-			buf := g.inputBuffer + "_"
+		if isCursor && (g.mode == ModeInput || g.mode == ModeEdit) {
+			runes := []rune(g.inputBuffer)
+			pos := g.editCursorPos
+			if pos < 0 {
+				pos = 0
+			}
+			if pos > len(runes) {
+				pos = len(runes)
+			}
+			// Insere indicador de cursor na posicao correta
+			buf := string(runes[:pos]) + "_" + string(runes[pos:])
 			display = runewidthPad(runewidthTrunc(buf, colW), colW)
 		} else {
 			display = g.sheet.FormatCellValue(cell, colW)
@@ -311,9 +341,19 @@ func (g *GridView) drawCmdBar1(screen tcell.Screen, x, y, width int, st, inputSt
 		}
 
 	case ModeInput:
-		// SC2: mostra "Enter value/label:" + o que foi digitado
-		prefix := " Enter: "
-		line = prefix + g.inputBuffer
+		line = " Enter: " + g.inputBuffer
+
+	case ModeEdit:
+		// Mostra conteudo com cursor na posicao de edicao
+		runes := []rune(g.inputBuffer)
+		pos := g.editCursorPos
+		if pos < 0 {
+			pos = 0
+		}
+		if pos > len(runes) {
+			pos = len(runes)
+		}
+		line = " Edit:  " + string(runes[:pos]) + "_" + string(runes[pos:])
 
 	case ModeCommand:
 		// SC2: ">" indica modo de comando
@@ -365,6 +405,8 @@ func (g *GridView) drawCmdBar2(screen tcell.Screen, x, y, width int, st, inputSt
 		// SC2: mostra dica do tipo de entrada
 		line = " [Enter]:Confirma  [Esc]:Cancela  [Setas]:Confirma e move  [\"]texto  [+@(]:formula"
 
+	case ModeEdit:
+		line = " [Enter]:Confirma  [Esc]:Cancela  [Esq/Dir]:Move cursor  [Del]:Apaga char"
 	case ModeCommand:
 		// SC2: lista de comandos do menu principal
 		line = " B:Blank C:Copy D:Delete F:Format G:Global I:Insert L:Load M:Move P:Print Q:Quit R:Rep S:Save T:Title W:Width X:Xfer Z:Zap"
@@ -409,6 +451,8 @@ func (g *GridView) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return g.handleInputMode(event)
 	case ModeCommand:
 		return g.handleCommand(event)
+	case ModeEdit:
+		return g.handleEditMode(event)
 	case ModeGoto:
 		return g.handleGoto(event)
 	}
@@ -460,6 +504,13 @@ func (g *GridView) handleNormal(event *tcell.EventKey) *tcell.EventKey {
 		// Ctrl+G: Goto celula
 		g.mode = ModeGoto
 		g.inputBuffer = ""
+	case tcell.KeyF1:
+		g.openHelp()
+		return nil
+	case tcell.KeyF2:
+		// F2 ativa modo de edicao inline (como /E do SC2)
+		g.EnterEditMode()
+		return nil
 	case tcell.KeyDelete, tcell.KeyBackspace, tcell.KeyBackspace2:
 		// Del: apaga conteudo da celula (SC2: /Blank ou Del)
 		g.sheet.SetCell(g.sheet.Cursor, nil)
@@ -475,7 +526,8 @@ func (g *GridView) handleNormal(event *tcell.EventKey) *tcell.EventKey {
 			g.mode = ModeCommand
 			g.inputBuffer = ""
 		case '?':
-			g.statusMsg = "SC2MSX v2 | /=Comandos Del=Apaga Tab=Direita =GoTo PgUp/Dn=Pagina !Recalc"
+			g.openHelp()
+			return nil
 		case '=':
 			// '=' ativa GoTo (comportamento exato do SC2 original)
 			g.mode = ModeGoto
@@ -501,6 +553,9 @@ func (g *GridView) handleInputMode(event *tcell.EventKey) *tcell.EventKey {
 	visCols := len(g.calcVisCols(width))
 
 	switch event.Key() {
+	case tcell.KeyF1:
+		g.openHelp()
+		return nil
 	case tcell.KeyEscape:
 		// ESC: cancela sem gravar (SC2 original)
 		g.mode = ModeNormal
@@ -569,11 +624,20 @@ func (g *GridView) handleCommand(event *tcell.EventKey) *tcell.EventKey {
 		g.mode = ModeNormal
 		g.inputBuffer = ""
 		switch cmd {
+		case 'A', 'a':
+			// Arrange: ordena intervalo de linhas ou colunas
+			if g.onCommand != nil {
+				g.onCommand("ARRANGE")
+			}
 		case 'B', 'b':
 			// Blank: apaga celula atual (mesmo que Del)
 			g.sheet.SetCell(g.sheet.Cursor, nil)
 			g.sheet.Recalc()
 			g.statusMsg = fmt.Sprintf("Celula %s apagada", g.sheet.Cursor)
+		case 'E', 'e':
+			// Edit: edita conteudo existente sem redigitar
+			g.mode = ModeNormal
+			g.EnterEditMode()
 		case 'Q', 'q':
 			if g.onCommand != nil {
 				g.onCommand("QUIT")
@@ -635,7 +699,10 @@ func (g *GridView) handleCommand(event *tcell.EventKey) *tcell.EventKey {
 				g.onCommand("XFER")
 			}
 		case '?':
-			g.statusMsg = "Comandos: B=Apaga C=Copia D=Del F=Formato G=Global I=Insere L=Carrega M=Move P=Imprime Q=Sai R=Replica S=Salva T=Titulo W=Largura X=Transf Z=Zera"
+			g.mode = ModeNormal
+			g.inputBuffer = ""
+			g.openHelp()
+			return nil
 		default:
 			g.statusMsg = fmt.Sprintf("Comando '/%c' nao reconhecido", cmd)
 		}
@@ -719,8 +786,34 @@ func parseInput(input string) *spreadsheet.Cell {
 		}
 	}
 
-	// Letra: texto (label) - SC2 nao precisa de aspas para textos que comecam com letra
+	// Letra: pode ser texto (label) OU nome de funcao sem @ (ex: SUM, IF, AVG)
+	// SC2 aceita funcoes sem @ se seguidas de parenteses: SUM(A1:A10)
 	if (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') {
+		if isFunctionCall(input) {
+			// Funcao sem @: converte para @FUNCAO internamente
+			return &spreadsheet.Cell{
+				Type:     spreadsheet.CellFormula,
+				Formula:  "@" + input,
+				RawInput: input,
+			}
+		}
+		// Referencia de celula sozinha como formula (ex: A1, B12)
+		if isCellRef(input) {
+			return &spreadsheet.Cell{
+				Type:     spreadsheet.CellFormula,
+				Formula:  "+" + input,
+				RawInput: input,
+			}
+		}
+		// Expressao com letra + operador (ex: A1+B1, A1*2, A1:B1 em contexto errado)
+		if containsFormulaOp(input) {
+			return &spreadsheet.Cell{
+				Type:     spreadsheet.CellFormula,
+				Formula:  "+" + input,
+				RawInput: input,
+			}
+		}
+		// Texto puro
 		return &spreadsheet.Cell{
 			Type: spreadsheet.CellText, TextValue: input, RawInput: input,
 		}
@@ -818,4 +911,191 @@ func fmtFloat(v float64) string {
 	// Senao: 6 digitos significativos (padrao SC2)
 	s := fmt.Sprintf("%.6g", v)
 	return s
+}
+
+// isFunctionCall detecta se o input e uma chamada de funcao sem @
+// Ex: SUM(A1:A10), AVG(B1:B5), IF(A1>0,1,0)
+// Regra: comeca com letras e contem '(' antes de qualquer espaco
+func isFunctionCall(s string) bool {
+	upper := strings.ToUpper(s)
+	// Funcoes conhecidas do SC2 MSX (com e sem @)
+	knownFuncs := []string{
+		"SUM", "AVG", "AVERAGE", "MIN", "MAX", "COUNT", "STD", "VAR",
+		"IF", "AND", "OR", "NOT",
+		"ABS", "INT", "SQRT", "LOG", "LOG10", "LN", "EXP",
+		"SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2",
+		"MOD", "ROUND", "NPV", "LOOKUP",
+		"TRUE", "FALSE", "NA", "ERROR", "ISERROR", "ISNA",
+		"DATE", "JDATE", "WDAY", "MONTH", "DAY", "YEAR", "PI",
+	}
+	for _, fn := range knownFuncs {
+		if strings.HasPrefix(upper, fn+"(") {
+			return true
+		}
+	}
+	return false
+}
+
+// isCellRef detecta se o input e uma referencia de celula sozinha
+// Ex: A1, B12, AA3, BK254
+// Regra: letras seguidas de digitos, sem mais nada
+func isCellRef(s string) bool {
+	s = strings.ToUpper(s)
+	i := 0
+	// Letras (1 ou 2)
+	for i < len(s) && s[i] >= 'A' && s[i] <= 'Z' {
+		i++
+	}
+	if i == 0 || i > 2 || i == len(s) {
+		return false
+	}
+	// Digitos (pelo menos 1)
+	j := i
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	// Deve ter consumido tudo
+	return j == len(s) && j > i
+}
+
+// containsFormulaOp detecta se a string contem operadores aritmeticos ou relacionais
+// indicando que e uma expressao, nao texto puro.
+// Ex: "A1+B1" -> true,  "VENDAS" -> false,  "A1*2" -> true
+func containsFormulaOp(s string) bool {
+	for _, ch := range s {
+		switch ch {
+		case '+', '-', '*', '/', '^', '(', ')', '=', '<', '>':
+			return true
+		}
+	}
+	return false
+}
+
+// ─── Modo de Edicao (/E Edit) ─────────────────────────────────────────────────
+
+// EnterEditMode ativa o modo de edicao para a celula atual,
+// carregando o conteudo existente no buffer com cursor no final.
+// Equivale ao comando /E do SC2 original.
+func (g *GridView) EnterEditMode() {
+	cell := g.sheet.GetCell(g.sheet.Cursor)
+	switch cell.Type {
+	case spreadsheet.CellEmpty:
+		g.mode = ModeInput
+		g.inputBuffer = ""
+		g.editCursorPos = 0
+	case spreadsheet.CellText:
+		g.mode = ModeEdit
+		g.inputBuffer = cell.TextValue
+		g.editCursorPos = len([]rune(cell.TextValue))
+	case spreadsheet.CellNumber:
+		g.mode = ModeEdit
+		g.inputBuffer = cell.RawInput
+		if g.inputBuffer == "" {
+			g.inputBuffer = fmtFloat(cell.NumericValue)
+		}
+		g.editCursorPos = len([]rune(g.inputBuffer))
+	case spreadsheet.CellFormula:
+		g.mode = ModeEdit
+		g.inputBuffer = cell.Formula
+		g.editCursorPos = len([]rune(cell.Formula))
+	}
+}
+
+// handleEditMode processa teclas no modo de edicao inline
+// Diferente do ModeInput: o cursor se move dentro do buffer (nao confirma e move)
+func (g *GridView) handleEditMode(event *tcell.EventKey) *tcell.EventKey {
+	_, _, width, _ := g.GetInnerRect()
+	visCols := len(g.calcVisCols(width))
+	runes := []rune(g.inputBuffer)
+	pos := g.editCursorPos
+
+	switch event.Key() {
+	case tcell.KeyEscape:
+		// Cancela edicao sem gravar
+		g.mode = ModeNormal
+		g.inputBuffer = ""
+		g.editCursorPos = 0
+
+	case tcell.KeyEnter:
+		// Confirma e move para baixo
+		g.commitInput()
+		g.mode = ModeNormal
+		g.sheet.MoveCursor(1, 0)
+		g.sheet.AdjustView(SC2_DATA_ROWS, visCols)
+
+	case tcell.KeyTab:
+		// Confirma e move para direita
+		g.commitInput()
+		g.mode = ModeNormal
+		g.sheet.MoveCursor(0, 1)
+		g.sheet.AdjustView(SC2_DATA_ROWS, visCols)
+
+	case tcell.KeyLeft:
+		// Move cursor de edicao para a esquerda (NAO confirma)
+		if pos > 0 {
+			g.editCursorPos = pos - 1
+		}
+
+	case tcell.KeyRight:
+		// Move cursor de edicao para a direita (NAO confirma)
+		if pos < len(runes) {
+			g.editCursorPos = pos + 1
+		}
+
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		// Vai para o inicio da linha de edicao
+		g.editCursorPos = 0
+
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		// Vai para o final da linha de edicao
+		g.editCursorPos = len(runes)
+
+	case tcell.KeyDelete:
+		// Apaga o caractere NA posicao do cursor (Delete forward)
+		if pos < len(runes) {
+			g.inputBuffer = string(runes[:pos]) + string(runes[pos+1:])
+			// editCursorPos permanece igual
+		}
+
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		// Apaga o caractere ANTES do cursor (Backspace)
+		if pos > 0 {
+			g.inputBuffer = string(runes[:pos-1]) + string(runes[pos:])
+			g.editCursorPos = pos - 1
+		}
+
+	case tcell.KeyCtrlK:
+		// Apaga do cursor ate o fim (Kill to end of line)
+		g.inputBuffer = string(runes[:pos])
+
+	case tcell.KeyCtrlU:
+		// Apaga tudo (Kill whole line)
+		g.inputBuffer = ""
+		g.editCursorPos = 0
+
+	case tcell.KeyF1:
+		g.openHelp()
+		return nil
+
+	case tcell.KeyRune:
+		// Insere caractere na posicao do cursor
+		ch := event.Rune()
+		newRunes := make([]rune, len(runes)+1)
+		copy(newRunes, runes[:pos])
+		newRunes[pos] = ch
+		copy(newRunes[pos+1:], runes[pos:])
+		g.inputBuffer = string(newRunes)
+		g.editCursorPos = pos + 1
+	}
+
+	// Garante que o cursor de edicao esta dentro dos limites
+	newLen := len([]rune(g.inputBuffer))
+	if g.editCursorPos < 0 {
+		g.editCursorPos = 0
+	}
+	if g.editCursorPos > newLen {
+		g.editCursorPos = newLen
+	}
+
+	return nil
 }
